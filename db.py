@@ -1,5 +1,7 @@
-password = "ptNetFCcvTtCmefnLqzZkjXyctJWLxhi"
-host = "switchyard.proxy.rlwy.net:59085"
-db_name = "edupointx"
+import streamlit as st
+from sqlalchemy import create_engine
 
-DB_URL = "mysql+pymysql://root:ptNetFCcvTtCmefnLqzZkjXyctJWLxhi@switchyard.proxy.rlwy.net:59085/edupointx?ssl_disabled=false"
+cfg = st.secrets["db"]
+
+DB_URL = f"mysql+pymysql://{cfg.user}:{cfg.password}@{cfg.host}:{cfg.port}/{cfg.database}?ssl_disabled=false"
+engine = create_engine(DB_URL)
