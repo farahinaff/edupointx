@@ -4,7 +4,7 @@ import altair as alt
 from sqlalchemy import create_engine, text
 from datetime import datetime
 import time
-from db import DB_URL
+from modules.db import DB_URL
 
 
 engine = create_engine(DB_URL)

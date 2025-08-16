@@ -3,8 +3,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 import altair as alt
 
-# DB_URL = "mysql+pymysql://root:@localhost/edupointx"
-from db import DB_URL
+from modules.db import DB_URL
 
 engine = create_engine(DB_URL)
 

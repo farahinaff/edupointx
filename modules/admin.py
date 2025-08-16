@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 from modules.auth import hash_password
-from db import DB_URL
+from modules.db import DB_URL
 
-# DB_URL = "mysql+pymysql://root:@localhost/edupointx"
 engine = create_engine(DB_URL)
 
 
