@@ -40,7 +40,7 @@ def _b64_or_none(filename: str) -> str | None:
 bg_b64 = _b64_or_none("background_main.jpg") or _b64_or_none("background_main.png")
 kpm_b64 = _b64_or_none("kpm.jpg") or _b64_or_none("kpm.png")
 jata_b64 = _b64_or_none("jata.jpg") or _b64_or_none("jata.png")
-logo_b64 = _b64_or_none("smapk_logo.jpg") or _b64_or_none("smapk_logo.png")
+logo_b64 = _b64_or_none("edupointx_logo.jpg") or _b64_or_none("edupointx_logo.png")
 
 # --- CONFIG ---
 st.set_page_config(page_title="EduPointX", layout="wide")
