@@ -15,8 +15,8 @@ def show_admin_dashboard(user):
         [
             "📚 Class View",
             "👨‍🏫 Teacher Assignment",
-            "🎁 Rewards",
-            "🧾 Approvals",
+            "🎁 Manage Stocks",
+            "🧾 Stock Approvals",
             "📊 Redemption Insights",
             "🔐 Reset Password",
         ]
@@ -234,83 +234,202 @@ def show_admin_dashboard(user):
                     st.rerun()
 
     # --- 🧾 TAB 4: Approvals ---
+    # --- 🧾 TAB 4: Manage Redemptions ---
     with tabs[3]:
-        st.subheader("🧾 Pending Redemptions")
-        with engine.connect() as conn:
-            pending = conn.execute(
-                text(
-                    """
-                    SELECT r.id, r.student_id, r.reward_id, r.created_at,
-                           s.name AS student_name, s.total_points,
-                           rw.name AS reward_name, rw.cost, rw.stock
-                    FROM redemptions r
-                    JOIN students s ON s.id = r.student_id
-                    JOIN rewards  rw ON rw.id = r.reward_id
-                    WHERE r.status = 'pending'
-                    ORDER BY r.created_at
-                    """
-                )
-            ).fetchall()
+        st.subheader("🧾 Manage Redemptions")
 
-        if not pending:
-            st.info("No pending requests.")
+        # --- Filters ---
+        status_filter = st.radio(
+            "Filter by Status",
+            ["pending", "approved", "rejected", "insufficient"],
+            horizontal=True,
+        )
+
+        with engine.connect() as conn:
+            classes = conn.execute(
+                text("SELECT DISTINCT class_name FROM students ORDER BY class_name")
+            ).fetchall()
+        class_list = [c[0] for c in classes]
+        class_filter = st.selectbox(
+            "Filter by Class", ["All"] + class_list, key="redeem_class"
+        )
+
+        # --- Query ---
+        query = """
+            SELECT r.id, r.student_id, r.reward_id, r.created_at, r.status,
+                s.name AS student_name, s.class_name, s.total_points,
+                rw.name AS reward_name, rw.cost, rw.stock
+            FROM redemptions r
+            JOIN students s ON s.id = r.student_id
+            JOIN rewards  rw ON rw.id = r.reward_id
+        """
+        params = {}
+
+        if status_filter == "insufficient":
+            # show only pending redemptions where points < cost OR stock <=0
+            query += " WHERE r.status = 'pending' AND (s.total_points < rw.cost OR rw.stock <= 0)"
         else:
+            query += " WHERE r.status = :status"
+            params["status"] = status_filter
+
+        if class_filter != "All":
+            query += " AND s.class_name = :cls"
+            params["cls"] = class_filter
+
+        query += " ORDER BY r.created_at"
+
+        with engine.connect() as conn:
+            rows = conn.execute(text(query), params).fetchall()
+
+        if not rows:
+            st.info(f"No {status_filter} requests.")
+        else:
+            # --- Bulk Approve ---
+            if status_filter == "pending":
+                scope = (
+                    f"for {class_filter}"
+                    if class_filter != "All"
+                    else "for ALL classes"
+                )
+                if st.button(f"✅ Approve All Pending {scope}"):
+                    try:
+                        with engine.begin() as tx:
+                            for (
+                                rid,
+                                sid,
+                                rwid,
+                                created_at,
+                                rstatus,
+                                sname,
+                                sclass,
+                                spts,
+                                rname,
+                                rcost,
+                                rstock,
+                            ) in rows:
+                                student = tx.execute(
+                                    text(
+                                        "SELECT total_points FROM students WHERE id=:sid"
+                                    ),
+                                    {"sid": sid},
+                                ).fetchone()
+                                if (
+                                    student
+                                    and student.total_points >= rcost
+                                    and rstock > 0
+                                ):
+                                    tx.execute(
+                                        text(
+                                            "UPDATE redemptions SET status='approved' WHERE id=:rid"
+                                        ),
+                                        {"rid": rid},
+                                    )
+                                    tx.execute(
+                                        text(
+                                            "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
+                                        ),
+                                        {"c": rcost, "sid": sid},
+                                    )
+                                    tx.execute(
+                                        text(
+                                            "UPDATE rewards SET stock = stock - 1 WHERE id=:rw"
+                                        ),
+                                        {"rw": rwid},
+                                    )
+                        st.success(
+                            f"All pending redemptions {scope} approved (where valid)."
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Bulk approval failed: {e}")
+
+            # --- Table header ---
+            header_cols = st.columns([1, 3, 2, 2, 1, 1])
+            header_cols[0].markdown("**ID**")
+            header_cols[1].markdown("**Student (Class)**")
+            header_cols[2].markdown("**Reward**")
+            header_cols[3].markdown("**Date**")
+            header_cols[4].markdown("**Status**")
+            header_cols[5].markdown("**Action**")
+
+            # --- Table rows ---
             for (
                 rid,
                 sid,
                 rwid,
                 created_at,
+                rstatus,
                 sname,
+                sclass,
                 spts,
                 rname,
                 rcost,
                 rstock,
-            ) in pending:
-                with st.container(border=True):
-                    st.markdown(
-                        f"**#{rid}** • 🎓 {sname} ({spts} pts) "
-                        f"→ 🎁 {rname} (cost {rcost}, stock {rstock}) • 🕒 {created_at}"
-                    )
-                    col1, col2 = st.columns([1, 1])
-                    with col1:
-                        if st.button("✅ Approve", key=f"approve_{rid}"):
-                            try:
-                                with engine.begin() as tx:
-                                    row = tx.execute(
-                                        text(
-                                            "SELECT total_points FROM students WHERE id=:sid"
-                                        ),
-                                        {"sid": sid},
-                                    ).fetchone()
-                                    if row.total_points < rcost:
-                                        st.warning("Not enough points.")
-                                    elif rstock <= 0:
-                                        st.warning("Out of stock.")
-                                    else:
-                                        tx.execute(
+            ) in rows:
+                row_cols = st.columns([1, 3, 2, 2, 1, 1])
+                row_cols[0].write(rid)
+                row_cols[1].write(
+                    f"{sname} ({sclass}) • {spts} pts"
+                )  # show current points
+                row_cols[2].write(f"{rname} ({rcost} pts, stock {rstock})")
+                row_cols[3].write(str(created_at))
+                row_cols[4].write(rstatus)
+
+                # Action buttons
+                if status_filter == "pending":
+                    with row_cols[5]:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✅", key=f"approve_{rid}"):
+                                try:
+                                    with engine.begin() as tx:
+                                        student = tx.execute(
                                             text(
-                                                "UPDATE redemptions SET status='approved' WHERE id=:rid"
+                                                "SELECT total_points FROM students WHERE id=:sid"
                                             ),
-                                            {"rid": rid},
-                                        )
-                                        tx.execute(
-                                            text(
-                                                "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
-                                            ),
-                                            {"c": rcost, "sid": sid},
-                                        )
-                                        tx.execute(
-                                            text(
-                                                "UPDATE rewards SET stock = stock - 1 WHERE id=:rid2"
-                                            ),
-                                            {"rid2": rwid},
-                                        )
-                                    st.success("Approved!")
+                                            {"sid": sid},
+                                        ).fetchone()
+                                        if student.total_points < rcost:
+                                            st.warning("Not enough points.")
+                                        elif rstock <= 0:
+                                            st.warning("Out of stock.")
+                                        else:
+                                            tx.execute(
+                                                text(
+                                                    "UPDATE redemptions SET status='approved' WHERE id=:rid"
+                                                ),
+                                                {"rid": rid},
+                                            )
+                                            tx.execute(
+                                                text(
+                                                    "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
+                                                ),
+                                                {"c": rcost, "sid": sid},
+                                            )
+                                            tx.execute(
+                                                text(
+                                                    "UPDATE rewards SET stock = stock - 1 WHERE id=:rw"
+                                                ),
+                                                {"rw": rwid},
+                                            )
+                                    st.success("Approved.")
                                     st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
-                    with col2:
-                        if st.button("❌ Reject", key=f"reject_{rid}"):
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        with c2:
+                            if st.button("❌", key=f"reject_{rid}"):
+                                with engine.begin() as tx:
+                                    tx.execute(
+                                        text(
+                                            "UPDATE redemptions SET status='rejected' WHERE id=:rid"
+                                        ),
+                                        {"rid": rid},
+                                    )
+                                st.warning("Rejected.")
+                                st.rerun()
+                elif status_filter == "insufficient":
+                    with row_cols[5]:
+                        if st.button("❌", key=f"reject_insuff_{rid}"):
                             with engine.begin() as tx:
                                 tx.execute(
                                     text(
@@ -318,12 +437,14 @@ def show_admin_dashboard(user):
                                     ),
                                     {"rid": rid},
                                 )
-                            st.warning("Rejected.")
+                            st.warning("Rejected (insufficient points/stock).")
                             st.rerun()
+                else:
+                    row_cols[5].write("—")
 
     # --- 📊 TAB 5: Redemption Insights ---
     with tabs[4]:
-        st.subheader("📊 Redemption Insights")
+        st.subheader("📊 Transactions")
         with engine.connect() as conn:
             status_rows = conn.execute(
                 text("SELECT status, COUNT(*) cnt FROM redemptions GROUP BY status")
@@ -358,16 +479,19 @@ def show_admin_dashboard(user):
         with col2:
             st.metric(
                 "Total Points Spent (Approved)",
-                total_points_row.pts if total_points_row else 0,
+                int(total_points_row.pts) if total_points_row else 0,
             )
 
         if top_rewards:
             st.markdown("**Top Rewards**")
-            st.table(pd.DataFrame(top_rewards, columns=["Reward", "Count"]))
+            st.table(pd.DataFrame(top_rewards, columns=["Reward", "Redemption Count"]))
         if top_students:
             st.markdown("**Top Students**")
             st.table(
-                pd.DataFrame(top_students, columns=["Student", "Count", "Points Spent"])
+                pd.DataFrame(
+                    top_students,
+                    columns=["Student", "Redemption Count", "Points Spent"],
+                )
             )
         if ts_rows:
             st.markdown("**Approvals Over Time**")
