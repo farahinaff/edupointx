@@ -2,8 +2,8 @@ import pymysql
 from sqlalchemy import create_engine, text
 import hashlib
 
+from modules.db import DB_URL
 
-DB_URL = "mysql+pymysql://root:@localhost/edupointx"
 engine = create_engine(DB_URL)
 
 
