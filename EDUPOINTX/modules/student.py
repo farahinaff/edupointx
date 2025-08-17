@@ -4,6 +4,8 @@ from sqlalchemy import create_engine, text
 import altair as alt
 from modules.db import DB_URL  # assuming you use a central db.py for connection
 
+from modules.db import DB_URL
+
 engine = create_engine(DB_URL)
 
 

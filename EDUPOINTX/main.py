@@ -14,6 +14,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+<<<<<<< HEAD
 if "sid" in st.query_params and "mode" in st.query_params:
     if st.query_params["mode"] == "deed":
 
@@ -25,6 +26,8 @@ if "sid" in st.query_params and "mode" in st.query_params:
     st.stop()
 
 
+=======
+>>>>>>> 51725cf78ba6cea443ded2ef2e6dfd38880ba3c1
 # --- INIT SESSION STATE ---
 if "user" not in st.session_state:
     st.session_state.user = None
