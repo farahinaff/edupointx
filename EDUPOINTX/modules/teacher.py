@@ -6,9 +6,6 @@ from datetime import datetime
 import time
 from modules.db import DB_URL
 
-from PIL import Image
-import cv2
-import numpy as np
 import streamlit.components.v1 as components
 
 
