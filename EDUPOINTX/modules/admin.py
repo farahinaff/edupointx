@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from sqlalchemy import create_engine, text
 from modules.auth import hash_password
 from modules.db import DB_URL
@@ -15,51 +16,72 @@ def show_admin_dashboard(user):
             "📚 Class View",
             "👨‍🏫 Teacher Assignment",
             "🎁 Rewards",
-            "🧾 Stock Approvals",  # NEW
-            "📊 Transactions",  # NEW
+            "🧾 Approvals",
+            "📊 Redemption Insights",
             "🔐 Reset Password",
         ]
     )
 
-    with engine.connect() as conn:
-        class_names = conn.execute(
-            text("SELECT DISTINCT class_name FROM students ORDER BY class_name")
-        ).fetchall()
+    # --- 📚 TAB 1: Class View ---
+    with tabs[0]:
+        with engine.connect() as conn:
+            class_names = conn.execute(
+                text("SELECT DISTINCT class_name FROM students ORDER BY class_name")
+            ).fetchall()
         class_list = [c[0] for c in class_names]
 
-        # --- 📚 TAB 1 ---
-        with tabs[0]:
+        if not class_list:
+            st.info("No classes found.")
+        else:
             selected_class1 = st.selectbox(
                 "🎓 Select Class", class_list, key="class_tab1"
             )
-
             st.subheader("👥 Students in Class")
-            students = conn.execute(
-                text(
-                    "SELECT id, name, total_points FROM students WHERE class_name = :cls ORDER BY name"
-                ),
-                {"cls": selected_class1},
-            ).fetchall()
-            st.dataframe(
-                pd.DataFrame(students, columns=["ID", "Name", "Points"]),
-                use_container_width=True,
-            )
+
+            with engine.connect() as conn:
+                students = conn.execute(
+                    text(
+                        "SELECT id, name, total_points FROM students WHERE class_name = :cls ORDER BY name"
+                    ),
+                    {"cls": selected_class1},
+                ).fetchall()
+
+            if not students:
+                st.info("No students found in this class.")
+            else:
+                st.dataframe(
+                    pd.DataFrame(students, columns=["ID", "Name", "Points"]),
+                    use_container_width=True,
+                )
 
             st.markdown("**👨‍🏫 Teachers assigned to this class:**")
-            teachers = conn.execute(
-                text(
-                    """
-                    SELECT t.name FROM teachers t
-                    JOIN teacher_class tc ON t.id = tc.teacher_id
-                    WHERE tc.class_name = :cls
-                """
-                ),
-                {"cls": selected_class1},
-            ).fetchall()
-            st.dataframe(pd.DataFrame(teachers, columns=["Teacher Name"]))
+            with engine.connect() as conn:
+                teachers = conn.execute(
+                    text(
+                        """
+                        SELECT t.name FROM teachers t
+                        JOIN teacher_class tc ON t.id = tc.teacher_id
+                        WHERE tc.class_name = :cls
+                        """
+                    ),
+                    {"cls": selected_class1},
+                ).fetchall()
+            if not teachers:
+                st.info("No teachers assigned yet.")
+            else:
+                st.dataframe(pd.DataFrame(teachers, columns=["Teacher Name"]))
 
-        # --- 👨‍🏫 TAB 2 ---
-        with tabs[1]:
+    # --- 👨‍🏫 TAB 2: Teacher Assignment ---
+    with tabs[1]:
+        with engine.connect() as conn:
+            class_names = conn.execute(
+                text("SELECT DISTINCT class_name FROM students ORDER BY class_name")
+            ).fetchall()
+        class_list = [c[0] for c in class_names]
+
+        if not class_list:
+            st.info("No classes found.")
+        else:
             selected_class2 = st.selectbox(
                 "🎓 Select Class", class_list, key="class_tab2"
             )
@@ -70,54 +92,56 @@ def show_admin_dashboard(user):
             )
             search = st.text_input("Search Teacher Name", key="teacher_search")
 
-            if filter_option == "Assigned":
-                t_query = """
-                    SELECT t.id, t.name FROM teachers t
-                    JOIN teacher_class tc ON t.id = tc.teacher_id
-                    WHERE tc.class_name = :cls AND LOWER(t.name) LIKE LOWER(:q)
-                    GROUP BY t.id, t.name
-                    ORDER BY t.name
-                """
-            else:
-                t_query = """
-                    SELECT t.id, t.name FROM teachers t
-                    WHERE t.id NOT IN (
-                        SELECT teacher_id FROM teacher_class WHERE class_name = :cls
-                    )
-                    AND LOWER(t.name) LIKE LOWER(:q)
-                    ORDER BY t.name
-                """
-            teachers = conn.execute(
-                text(t_query), {"cls": selected_class2, "q": f"%{search}%"}
-            ).fetchall()
+            with engine.connect() as conn:
+                if filter_option == "Assigned":
+                    t_query = """
+                        SELECT t.id, t.name FROM teachers t
+                        JOIN teacher_class tc ON t.id = tc.teacher_id
+                        WHERE tc.class_name = :cls AND LOWER(t.name) LIKE LOWER(:q)
+                        GROUP BY t.id, t.name
+                        ORDER BY t.name
+                    """
+                else:
+                    t_query = """
+                        SELECT t.id, t.name FROM teachers t
+                        WHERE t.id NOT IN (
+                            SELECT teacher_id FROM teacher_class WHERE class_name = :cls
+                        )
+                        AND LOWER(t.name) LIKE LOWER(:q)
+                        ORDER BY t.name
+                    """
+
+                teachers = conn.execute(
+                    text(t_query), {"cls": selected_class2, "q": f"%{search}%"}
+                ).fetchall()
 
             if not teachers:
                 st.info("No teachers match the filter.")
             else:
                 for tid, tname in teachers:
-                    assigned = conn.execute(
-                        text(
-                            "SELECT 1 FROM teacher_class WHERE teacher_id = :tid AND class_name = :cls"
-                        ),
-                        {"tid": tid, "cls": selected_class2},
-                    ).fetchone()
-
+                    with engine.connect() as conn:
+                        assigned = conn.execute(
+                            text(
+                                "SELECT 1 FROM teacher_class WHERE teacher_id = :tid AND class_name = :cls"
+                            ),
+                            {"tid": tid, "cls": selected_class2},
+                        ).fetchone()
                     col1, col2 = st.columns([5, 1])
                     with col1:
                         st.markdown(f"**{tname}**")
-                        class_rows = conn.execute(
-                            text(
-                                "SELECT class_name FROM teacher_class WHERE teacher_id = :tid"
-                            ),
-                            {"tid": tid},
-                        ).fetchall()
+                        with engine.connect() as conn:
+                            class_rows = conn.execute(
+                                text(
+                                    "SELECT class_name FROM teacher_class WHERE teacher_id = :tid"
+                                ),
+                                {"tid": tid},
+                            ).fetchall()
                         class_str = (
                             ", ".join([row[0] for row in class_rows])
                             if class_rows
                             else "❌ None"
                         )
                         st.caption(f"Classes: {class_str}")
-
                     with col2:
                         if assigned:
                             if st.button("🗑 Unassign", key=f"unassign_{tid}"):
@@ -142,15 +166,20 @@ def show_admin_dashboard(user):
                                 st.success(f"{tname} assigned to {selected_class2}")
                                 st.rerun()
 
-        # --- 🎁 TAB 3 ---
-        with tabs[2]:
-            st.subheader("🎁 Manage Rewards")
+    # --- 🎁 TAB 3: Rewards ---
+    with tabs[2]:
+        st.subheader("🎁 Manage Rewards")
+        r_search = st.text_input("Search Rewards", key="reward_search")
 
-            r_search = st.text_input("Search Rewards", key="reward_search")
+        with engine.connect() as conn:
             rewards = conn.execute(
                 text("SELECT id, name, cost, stock FROM rewards WHERE name LIKE :q"),
                 {"q": f"%{r_search}%"},
             ).fetchall()
+
+        if not rewards:
+            st.info("No rewards found.")
+        else:
             r_df = pd.DataFrame(rewards, columns=["ID", "Name", "Cost", "Stock"])
             st.dataframe(r_df, use_container_width=True)
 
@@ -159,329 +188,230 @@ def show_admin_dashboard(user):
                 r_desc = st.text_area("Description")
                 r_cost = st.number_input("Cost", min_value=1)
                 r_stock = st.number_input("Stock", min_value=0)
+                r_source = st.selectbox("Source", ["coop", "canteen"])
                 if st.button("✅ Add Reward"):
                     with engine.begin() as tx:
                         tx.execute(
                             text(
-                                "INSERT INTO rewards (name, description, cost, stock) VALUES (:n, :d, :c, :s)"
+                                "INSERT INTO rewards (name, description, cost, stock, source) VALUES (:n, :d, :c, :s, :src)"
                             ),
-                            {"n": r_name, "d": r_desc, "c": r_cost, "s": r_stock},
+                            {
+                                "n": r_name,
+                                "d": r_desc,
+                                "c": r_cost,
+                                "s": r_stock,
+                                "src": r_source,
+                            },
                         )
                     st.success(f"Added reward '{r_name}'")
                     st.rerun()
 
-            if not r_df.empty:
-                selected_reward = st.selectbox(
-                    "Select Reward to Edit", r_df["Name"].tolist()
-                )
-                r_row = r_df[r_df["Name"] == selected_reward].iloc[0]
-
+            selected_reward = st.selectbox(
+                "Select Reward to Edit", [r[1] for r in rewards], key="edit_reward"
+            )
+            if selected_reward:
+                r_row = next(r for r in rewards if r[1] == selected_reward)
                 with st.expander("✏️ Edit Reward"):
-                    new_cost = st.number_input("New Cost", value=int(r_row["Cost"]))
-                    new_stock = st.number_input("New Stock", value=int(r_row["Stock"]))
+                    new_cost = st.number_input("New Cost", value=int(r_row[2]))
+                    new_stock = st.number_input("New Stock", value=int(r_row[3]))
                     if st.button("💾 Update"):
                         with engine.begin() as tx:
                             tx.execute(
                                 text(
                                     "UPDATE rewards SET cost = :c, stock = :s WHERE id = :rid"
                                 ),
-                                {
-                                    "c": new_cost,
-                                    "s": new_stock,
-                                    "rid": int(r_row["ID"]),
-                                },
+                                {"c": new_cost, "s": new_stock, "rid": r_row[0]},
                             )
                         st.success("Reward updated.")
                         st.rerun()
-
                 if st.button("🗑 Delete Reward"):
                     with engine.begin() as tx:
                         tx.execute(
                             text("DELETE FROM rewards WHERE id = :rid"),
-                            {"rid": int(r_row["ID"])},
+                            {"rid": r_row[0]},
                         )
                     st.warning("Reward deleted.")
                     st.rerun()
 
-        # --- 🧾 TAB: Approvals ---
-        with tabs[3]:
-            st.subheader("🧾 Pending Redemptions – Approve or Reject")
+    # --- 🧾 TAB 4: Approvals ---
+    with tabs[3]:
+        st.subheader("🧾 Pending Redemptions")
+        with engine.connect() as conn:
+            pending = conn.execute(
+                text(
+                    """
+                    SELECT r.id, r.student_id, r.reward_id, r.created_at,
+                           s.name AS student_name, s.total_points,
+                           rw.name AS reward_name, rw.cost, rw.stock
+                    FROM redemptions r
+                    JOIN students s ON s.id = r.student_id
+                    JOIN rewards  rw ON rw.id = r.reward_id
+                    WHERE r.status = 'pending'
+                    ORDER BY r.created_at
+                    """
+                )
+            ).fetchall()
 
-            with engine.connect() as conn:
-                pending = conn.execute(
-                    text(
-                        """
-                        SELECT r.id, r.student_id, r.reward_id, r.created_at,
-                            s.name AS student_name, s.total_points,
-                            rw.name AS reward_name, rw.cost, rw.stock
-                        FROM redemptions r
-                        JOIN students s ON s.id = r.student_id
-                        JOIN rewards  rw ON rw.id = r.reward_id
-                        WHERE r.status = 'pending'
-                        ORDER BY r.created_at
-                        """
+        if not pending:
+            st.info("No pending requests.")
+        else:
+            for (
+                rid,
+                sid,
+                rwid,
+                created_at,
+                sname,
+                spts,
+                rname,
+                rcost,
+                rstock,
+            ) in pending:
+                with st.container(border=True):
+                    st.markdown(
+                        f"**#{rid}** • 🎓 {sname} ({spts} pts) "
+                        f"→ 🎁 {rname} (cost {rcost}, stock {rstock}) • 🕒 {created_at}"
                     )
-                ).fetchall()
-
-            if not pending:
-                st.info("No pending redemptions right now.")
-            else:
-                for (
-                    rid,
-                    sid,
-                    rwid,
-                    created_at,
-                    sname,
-                    spts,
-                    rname,
-                    rcost,
-                    rstock,
-                ) in pending:
-                    with st.container(border=True):
-                        st.markdown(
-                            f"**#{rid}** • 🎓 {sname} (pts: {spts}) "
-                            f"→ 🎁 {rname} (cost: **{rcost}**, stock: {rstock}) • "
-                            f"🕒 {created_at}"
-                        )
-                        c1, c2, c3 = st.columns([1, 1, 3])
-                        with c1:
-                            if st.button("✅ Approve", key=f"approve_{rid}"):
-                                # Check points & stock, then approve and deduct
-                                try:
-                                    with engine.begin() as tx:
-                                        # Re-read fresh values inside txn
-                                        row = tx.execute(
-                                            text(
-                                                """
-                                                SELECT s.total_points AS pts, rw.stock AS stk, rw.cost AS cost
-                                                FROM students s, rewards rw
-                                                WHERE s.id = :sid AND rw.id = :rwid
-                                                """
-                                            ),
-                                            {"sid": sid, "rwid": rwid},
-                                        ).fetchone()
-
-                                        if not row:
-                                            st.error(
-                                                "Record not found (student/reward)."
-                                            )
-                                        else:
-                                            pts, stk, cost = row.pts, row.stk, row.cost
-                                            if pts < cost:
-                                                st.warning(
-                                                    "Insufficient points – cannot approve."
-                                                )
-                                            elif stk <= 0:
-                                                st.warning(
-                                                    "Out of stock – cannot approve."
-                                                )
-                                            else:
-                                                # Update redemption + deduct points + reduce stock
-                                                tx.execute(
-                                                    text(
-                                                        "UPDATE redemptions SET status='approved' WHERE id=:rid"
-                                                    ),
-                                                    {"rid": rid},
-                                                )
-                                                tx.execute(
-                                                    text(
-                                                        "UPDATE students SET total_points = total_points - :c WHERE id = :sid"
-                                                    ),
-                                                    {"c": cost, "sid": sid},
-                                                )
-                                                tx.execute(
-                                                    text(
-                                                        "UPDATE rewards SET stock = stock - 1 WHERE id = :rwid"
-                                                    ),
-                                                    {"rwid": rwid},
-                                                )
-                                                st.success(
-                                                    "Approved and updated balances."
-                                                )
-                                                st.rerun()
-                                except Exception as e:
-                                    st.error("Approval failed.")
-                                    st.code(str(e))
-
-                        with c2:
-                            if st.button("❌ Reject", key=f"reject_{rid}"):
-                                try:
-                                    with engine.begin() as tx:
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        if st.button("✅ Approve", key=f"approve_{rid}"):
+                            try:
+                                with engine.begin() as tx:
+                                    row = tx.execute(
+                                        text(
+                                            "SELECT total_points FROM students WHERE id=:sid"
+                                        ),
+                                        {"sid": sid},
+                                    ).fetchone()
+                                    if row.total_points < rcost:
+                                        st.warning("Not enough points.")
+                                    elif rstock <= 0:
+                                        st.warning("Out of stock.")
+                                    else:
                                         tx.execute(
                                             text(
-                                                "UPDATE redemptions SET status='rejected' WHERE id=:rid"
+                                                "UPDATE redemptions SET status='approved' WHERE id=:rid"
                                             ),
                                             {"rid": rid},
                                         )
-                                    st.warning("Request rejected.")
+                                        tx.execute(
+                                            text(
+                                                "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
+                                            ),
+                                            {"c": rcost, "sid": sid},
+                                        )
+                                        tx.execute(
+                                            text(
+                                                "UPDATE rewards SET stock = stock - 1 WHERE id=:rid2"
+                                            ),
+                                            {"rid2": rwid},
+                                        )
+                                    st.success("Approved!")
                                     st.rerun()
-                                except Exception as e:
-                                    st.error("Rejection failed.")
-                                    st.code(str(e))
-                        with c3:
-                            st.caption("Approving will deduct points and reduce stock.")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                    with col2:
+                        if st.button("❌ Reject", key=f"reject_{rid}"):
+                            with engine.begin() as tx:
+                                tx.execute(
+                                    text(
+                                        "UPDATE redemptions SET status='rejected' WHERE id=:rid"
+                                    ),
+                                    {"rid": rid},
+                                )
+                            st.warning("Rejected.")
+                            st.rerun()
 
-        # --- 📊 TAB: Redemption Insights ---
-        with tabs[4]:
-            st.subheader("📊 Transaction Insights")
-
-            with engine.connect() as conn:
-                # Status counts
-                status_rows = conn.execute(
-                    text(
-                        "SELECT status, COUNT(*) AS cnt FROM redemptions GROUP BY status"
-                    )
-                ).fetchall()
-
-                # Total points spent (approved only)
-                total_points_row = conn.execute(
-                    text(
-                        """
-                        SELECT COALESCE(SUM(rw.cost),0) AS pts
-                        FROM redemptions r
-                        JOIN rewards rw ON rw.id = r.reward_id
-                        WHERE r.status = 'approved'
-                        """
-                    )
-                ).fetchone()
-
-                # Top rewards (approved)
-                top_rewards = conn.execute(
-                    text(
-                        """
-                        SELECT rw.name, COUNT(*) AS cnt
-                        FROM redemptions r
-                        JOIN rewards rw ON rw.id = r.reward_id
-                        WHERE r.status = 'approved'
-                        GROUP BY rw.id, rw.name
-                        ORDER BY cnt DESC
-                        LIMIT 10
-                        """
-                    )
-                ).fetchall()
-
-                # Top students by redemptions (approved)
-                top_students = conn.execute(
-                    text(
-                        """
-                        SELECT s.name, COUNT(*) AS cnt, SUM(rw.cost) AS points_spent
-                        FROM redemptions r
-                        JOIN students s ON s.id = r.student_id
-                        JOIN rewards  rw ON rw.id = r.reward_id
-                        WHERE r.status = 'approved'
-                        GROUP BY s.id, s.name
-                        ORDER BY cnt DESC
-                        LIMIT 10
-                        """
-                    )
-                ).fetchall()
-
-                # Time series (approved per day)
-                ts_rows = conn.execute(
-                    text(
-                        """
-                        SELECT DATE(r.created_at) AS d, COUNT(*) AS cnt
-                        FROM redemptions r
-                        WHERE r.status = 'approved'
-                        GROUP BY DATE(r.created_at)
-                        ORDER BY d
-                        """
-                    )
-                ).fetchall()
-
-            # Display status summary
-            import pandas as pd
-            import altair as alt
-
-            colA, colB = st.columns(2)
-            with colA:
-                if status_rows:
-                    st.markdown("**Requests by Status**")
-                    st.table(pd.DataFrame(status_rows, columns=["Status", "Count"]))
-                else:
-                    st.info("No redemptions yet.")
-
-            with colB:
-                total_pts = total_points_row.pts if total_points_row else 0
-                st.metric("Total Points Spent (Approved)", value=int(total_pts))
-
-            col1, col2 = st.columns(2)
-            with col1:
-                if top_rewards:
-                    st.markdown("**Top Redeemed Rewards (Approved)**")
-                    st.table(pd.DataFrame(top_rewards, columns=["Reward", "Count"]))
-                else:
-                    st.info("No approved redemptions yet for rewards ranking.")
-
-            with col2:
-                if top_students:
-                    st.markdown("**Top Students by Approved Redemptions**")
-                    df_top_students = pd.DataFrame(
-                        top_students, columns=["Student", "Count", "Points Spent"]
-                    )
-                    st.table(df_top_students)
-                else:
-                    st.info("No approved redemptions yet for student ranking.")
-
-            if ts_rows:
-                st.markdown("**Approvals Over Time**")
-                df_ts = pd.DataFrame(ts_rows, columns=["Date", "Approved Count"])
-                chart = (
-                    alt.Chart(df_ts)
-                    .mark_line(point=True)
-                    .encode(x="Date:T", y="Approved Count:Q")
-                    .properties(height=300)
+    # --- 📊 TAB 5: Redemption Insights ---
+    with tabs[4]:
+        st.subheader("📊 Redemption Insights")
+        with engine.connect() as conn:
+            status_rows = conn.execute(
+                text("SELECT status, COUNT(*) cnt FROM redemptions GROUP BY status")
+            ).fetchall()
+            total_points_row = conn.execute(
+                text(
+                    "SELECT COALESCE(SUM(rw.cost),0) pts FROM redemptions r JOIN rewards rw ON rw.id=r.reward_id WHERE r.status='approved'"
                 )
-                st.altair_chart(chart, use_container_width=True)
+            ).fetchone()
+            top_rewards = conn.execute(
+                text(
+                    "SELECT rw.name, COUNT(*) cnt FROM redemptions r JOIN rewards rw ON rw.id=r.reward_id WHERE r.status='approved' GROUP BY rw.id, rw.name ORDER BY cnt DESC LIMIT 10"
+                )
+            ).fetchall()
+            top_students = conn.execute(
+                text(
+                    "SELECT s.name, COUNT(*) cnt, SUM(rw.cost) spent FROM redemptions r JOIN students s ON s.id=r.student_id JOIN rewards rw ON rw.id=r.reward_id WHERE r.status='approved' GROUP BY s.id,s.name ORDER BY cnt DESC LIMIT 10"
+                )
+            ).fetchall()
+            ts_rows = conn.execute(
+                text(
+                    "SELECT DATE(created_at) d, COUNT(*) cnt FROM redemptions WHERE status='approved' GROUP BY DATE(created_at) ORDER BY d"
+                )
+            ).fetchall()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if status_rows:
+                st.table(pd.DataFrame(status_rows, columns=["Status", "Count"]))
             else:
-                st.info("No approved redemptions to show in the timeline.")
+                st.info("No redemption data yet.")
+        with col2:
+            st.metric(
+                "Total Points Spent (Approved)",
+                total_points_row.pts if total_points_row else 0,
+            )
 
-        # --- RESET PASSWORD ---
-        with tabs[5]:
-            st.subheader("Reset User Password")
-            role = st.radio("Select Role", ["student", "teacher"], horizontal=True)
-            name_filter = st.text_input("Search Name", key="pw_reset_name")
+        if top_rewards:
+            st.markdown("**Top Rewards**")
+            st.table(pd.DataFrame(top_rewards, columns=["Reward", "Count"]))
+        if top_students:
+            st.markdown("**Top Students**")
+            st.table(
+                pd.DataFrame(top_students, columns=["Student", "Count", "Points Spent"])
+            )
+        if ts_rows:
+            st.markdown("**Approvals Over Time**")
+            df_ts = pd.DataFrame(ts_rows, columns=["Date", "Approved Count"])
+            chart = (
+                alt.Chart(df_ts)
+                .mark_line(point=True)
+                .encode(x="Date:T", y="Approved Count:Q")
+                .properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
 
+    # --- 🔐 TAB 6: Reset Password ---
+    with tabs[5]:
+        st.subheader("Reset User Password")
+        role = st.radio("Select Role", ["student", "teacher"], horizontal=True)
+        name_filter = st.text_input("Search Name", key="pw_reset_name")
+
+        with engine.connect() as conn:
             if role == "student":
-                selected_pw_class = st.selectbox(
-                    "Select Class", class_list, key="pw_reset_class"
-                )
                 users = conn.execute(
                     text(
-                        """
-                    SELECT u.username, s.name
-                    FROM users u
-                    JOIN students s ON u.student_id = s.id
-                    WHERE u.role = 'student' AND s.class_name = :cls AND s.name LIKE :q
-                """
+                        "SELECT u.username, s.name FROM users u JOIN students s ON u.student_id=s.id WHERE u.role='student' AND s.name LIKE :q"
                     ),
-                    {"cls": selected_pw_class, "q": f"%{name_filter}%"},
+                    {"q": f"%{name_filter}%"},
                 ).fetchall()
             else:
                 users = conn.execute(
                     text(
-                        """
-                    SELECT u.username, t.name
-                    FROM users u
-                    JOIN teachers t ON u.teacher_id = t.id
-                    WHERE u.role = 'teacher' AND t.name LIKE :q
-                """
+                        "SELECT u.username, t.name FROM users u JOIN teachers t ON u.teacher_id=t.id WHERE u.role='teacher' AND t.name LIKE :q"
                     ),
                     {"q": f"%{name_filter}%"},
                 ).fetchall()
 
-            if not users:
-                st.info("No users found.")
-            else:
-                u_map = {f"{n} ({u})": u for u, n in users}
-                selected_u = st.selectbox("Select User to Reset", list(u_map.keys()))
-                if st.button("🔁 Reset to 'password123'"):
-                    new_pw = hash_password("password123")
-                    with engine.begin() as tx:
-                        tx.execute(
-                            text(
-                                "UPDATE users SET password_hash = :p WHERE username = :u"
-                            ),
-                            {"p": new_pw, "u": u_map[selected_u]},
-                        )
-                    st.success(f"{selected_u} password reset to 'password123'.")
+        if not users:
+            st.info("No users found.")
+        else:
+            u_map = {f"{n} ({u})": u for u, n in users}
+            selected_u = st.selectbox("Select User to Reset", list(u_map.keys()))
+            if st.button("🔁 Reset to 'password123'"):
+                new_pw = hash_password("password123")
+                with engine.begin() as tx:
+                    tx.execute(
+                        text("UPDATE users SET password_hash=:p WHERE username=:u"),
+                        {"p": new_pw, "u": u_map[selected_u]},
+                    )
+                st.success(f"{selected_u} password reset to 'password123'.")
