@@ -1,5 +1,7 @@
 import streamlit as st
 import base64
+from pathlib import Path
+
 from modules.auth import login_user
 from modules.student import show_student_dashboard
 from modules.teacher import show_teacher_dashboard
@@ -7,95 +9,131 @@ from modules.admin import show_admin_dashboard
 from modules.signup import show_signup_form
 from modules.qr_deed import show_qr_deed_submission
 
+# ---------- robust asset loading ----------
+APP_DIR = Path(__file__).resolve().parent
+CWD = Path.cwd()
+CANDIDATE_DIRS = [
+    APP_DIR / "assets",
+    CWD / "assets",
+    APP_DIR,  # in case assets are beside main.py
+    CWD,  # last resort
+]
 
-# --- Helper to encode images as base64 ---
-def get_base64(file_path):
-    with open(file_path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+
+def _find_asset(filename: str) -> Path | None:
+    for d in CANDIDATE_DIRS:
+        p = d / filename
+        if p.exists():
+            return p
+    return None
 
 
-# --- Load assets (JPG) ---
-bg_base64 = get_base64("assets/background_main.jpg")
-kpm_base64 = get_base64("assets/kpm.jpg")
-jata_base64 = get_base64("assets/jata.jpg")
-smapk_base64 = get_base64("assets/edupointx_logo.jpg")
+def _b64_or_none(filename: str) -> str | None:
+    p = _find_asset(filename)
+    if not p:
+        return None
+    with p.open("rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+# Load your images (use .jpg when you have it; PNG is fine too)
+bg_b64 = _b64_or_none("background_main.jpg") or _b64_or_none("background_main.png")
+kpm_b64 = _b64_or_none("kpm.jpg") or _b64_or_none("kpm.png")
+jata_b64 = _b64_or_none("jata.jpg") or _b64_or_none("jata.png")
+logo_b64 = _b64_or_none("smapk_logo.jpg") or _b64_or_none("smapk_logo.png")
 
 # --- CONFIG ---
 st.set_page_config(page_title="EduPointX", layout="wide")
 
-# --- CUSTOM CSS ---
-st.markdown(
+# --- THEME & BACKGROUND CSS ---
+bg_css = (
     f"""
-    <style>
-    /* Background with dark blue overlay */
     [data-testid="stAppViewContainer"] {{
-        background: linear-gradient(rgba(0,0,50,0.75), rgba(0,0,50,0.75)),
-                    url("data:image/jpg;base64,{bg_base64}");
+        background: linear-gradient(rgba(0,0,50,0.78), rgba(0,0,50,0.78)),
+                    url("data:image/jpg;base64,{bg_b64}");
         background-size: cover;
         background-position: center;
         background-repeat: no-repeat;
     }}
-
-    /* Dark blue & gold theme */
-    h1, h2, h3, h4, h5, h6, p, span, label {{
-        color: #FFD700 !important; /* Gold */
-    }}
-    .stButton button {{
-        background-color: #002147 !important; /* Dark navy */
-        color: #FFD700 !important;
-        border-radius: 10px;
-        border: 1px solid #FFD700;
-    }}
-    .stButton button:hover {{
-        background-color: #003366 !important;
-        border: 1px solid #FFD700;
-    }}
-
-    /* Top corner logos */
-    .top-left-logo, .top-right-logo {{
-        position: absolute;
-        top: 15px;
-        width: 70px;
-        height: auto;
-        z-index: 1000; /* keep above background, below text */
-    }}
-    .top-left-logo {{ left: 20px; }}
-    .top-right-logo {{ right: 20px; }}
-    
-    @media (max-width: 768px) {{
-        .top-left-logo, .top-right-logo {{
-            width: 50px;
-            top: 60px;   /* push them lower, so they don't overlap the title */
-        }}
-    }}
-    /* Center school logo */
-    .center-logo {{
-        display: block;
-        margin-left: auto;
-        margin-right: auto;
-        margin-top: -10px;
-        margin-bottom: 20px;
-        width: 120px;
-        height: 120px;
-        border-radius: 50%;
-        border: 3px solid #FFD700;
-        object-fit: cover;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
+    """
+    if bg_b64
+    else """
+    [data-testid="stAppViewContainer"] {
+        background: linear-gradient(rgba(0,0,50,0.88), rgba(0,0,50,0.88));
+    }
+    """
 )
 
-# --- Place logos & title ---
 st.markdown(
     f"""
-    <img src="data:image/jpg;base64,{kpm_base64}" class="top-left-logo">
-    <img src="data:image/jpg;base64,{jata_base64}" class="top-right-logo">
-    <h1 style='text-align:center; color:#FFD700;'>EduPointX – School Points & Redemption System</h1>
-    <img src="data:image/jpg;base64,{smapk_base64}" class="center-logo">
-    """,
+<style>
+{bg_css}
+
+/* Dark blue & gold theme */
+h1, h2, h3, h4, h5, h6, p, span, label {{
+  color: #FFD700 !important;
+}}
+.stButton button {{
+  background-color: #002147 !important;
+  color: #FFD700 !important;
+  border-radius: 10px;
+  border: 1px solid #FFD700;
+}}
+.stButton button:hover {{
+  background-color: #003366 !important;
+  border: 1px solid #FFD700;
+}}
+
+/* Corner logos (keep the style you liked) */
+.top-left-logo, .top-right-logo {{
+  position: absolute;
+  top: 16px;
+  width: 70px;
+  height: auto;
+  z-index: 10;
+}}
+.top-left-logo {{ left: 20px; }}
+.top-right-logo {{ right: 20px; }}
+
+/* Mobile: shrink & move down so they don't cover the title */
+@media (max-width: 768px) {{
+  .top-left-logo, .top-right-logo {{
+    width: 50px;
+    top: 62px; /* push below title area */
+  }}
+}}
+
+/* Center school logo under title */
+.center-logo {{
+  display: block;
+  margin: -6px auto 20px auto;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: 3px solid #FFD700;
+  object-fit: cover;
+}}
+</style>
+""",
     unsafe_allow_html=True,
 )
+
+# --- Header (only render images that were found) ---
+header_html = ""
+if kpm_b64:
+    header_html += f'<img src="data:image/jpg;base64,{kpm_b64}" class="top-left-logo">'
+if jata_b64:
+    header_html += (
+        f'<img src="data:image/jpg;base64,{jata_b64}" class="top-right-logo">'
+    )
+
+header_html += "<h2 style='text-align:center; color:#FFD700;'>EduPointX – School Points & Redemption System</h2>"
+
+if logo_b64:
+    header_html += f'<img src="data:image/jpg;base64,{logo_b64}" class="center-logo">'
+
+st.markdown(header_html, unsafe_allow_html=True)
+
 
 # --- QR MODE HANDLING ---
 if "sid" in st.query_params and "action" in st.query_params:
