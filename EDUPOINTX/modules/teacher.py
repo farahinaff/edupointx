@@ -1,24 +1,141 @@
-import streamlit as st
-import pandas as pd
-import altair as alt
-from sqlalchemy import create_engine, text
-from datetime import datetime
+# modules/teacher.py
 import time
+from datetime import datetime
+
+import altair as alt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from PIL import Image, ImageOps
+from sqlalchemy import create_engine, text
+
+import cv2  # QR detection from uploaded images
 from modules.db import DB_URL
-
-import streamlit.components.v1 as components
-
 
 engine = create_engine(DB_URL)
 
 
+# ---------- QR helpers ----------
+def _decode_all_qr_strings_from_image(image_file) -> list[str]:
+    """
+    Robustly decode ALL QR strings from an image that may contain 2 QRs.
+    Strategy:
+      - EXIF-rotate, RGB -> BGR
+      - Decode full image
+      - Decode LEFT and RIGHT halves separately (+ small mid strips)
+      - Try multi-decode + single decode
+      - Try scaled + contrast/threshold variants
+    Returns a list of decoded strings (order unique-preserved).
+    """
+    # load & orient
+    pil = Image.open(image_file)
+    pil = ImageOps.exif_transpose(pil).convert("RGB")
+    rgb = np.array(pil)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    def _try_decode(img_bgr):
+        results = []
+        det = cv2.QRCodeDetector()
+        ok, infos, _, _ = det.detectAndDecodeMulti(img_bgr)
+        if ok and infos:
+            for s in infos:
+                if s and s.strip():
+                    results.append(s.strip())
+        if not results:
+            data, _, _ = det.detectAndDecode(img_bgr)
+            if data and data.strip():
+                results.append(data.strip())
+        return results
+
+    def _scaled_and_enhanced(img_bgr):
+        outs = []
+        # scales
+        for s in (1.5, 2.0, 0.75):
+            rs = cv2.resize(
+                img_bgr,
+                None,
+                fx=s,
+                fy=s,
+                interpolation=cv2.INTER_CUBIC if s > 1 else cv2.INTER_AREA,
+            )
+            outs += _try_decode(rs)
+            if outs:
+                break
+        if outs:
+            return outs
+        # contrast + adaptive threshold
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        g2 = clahe.apply(gray)
+        thr = cv2.adaptiveThreshold(
+            g2, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 2
+        )
+        thr_bgr = cv2.cvtColor(thr, cv2.COLOR_GRAY2BGR)
+        outs += _try_decode(thr_bgr)
+        return outs
+
+    H, W = bgr.shape[:2]
+    mid = W // 2
+    pad = int(0.04 * W)  # small padding to avoid cutting into modules
+    LEFT = bgr[:, :mid]
+    RIGHT = bgr[:, mid:]
+    L_strip = bgr[:, max(0, mid - pad * 3) : mid + pad]
+    R_strip = bgr[:, mid - pad : min(W, mid + pad * 3)]
+
+    decoded = []
+    # 1) full frame
+    decoded += _try_decode(bgr)
+    # 2) halves
+    decoded += _try_decode(LEFT)
+    decoded += _try_decode(RIGHT)
+    # 3) mid-expanded strips
+    decoded += _try_decode(L_strip)
+    decoded += _try_decode(R_strip)
+    # 4) scaled/enhanced
+    if not decoded:
+        decoded += _scaled_and_enhanced(bgr)
+        decoded += _scaled_and_enhanced(LEFT)
+        decoded += _scaled_and_enhanced(RIGHT)
+
+    # unique while preserving order
+    seen = set()
+    uniq = []
+    for s in decoded:
+        if s not in seen:
+            uniq.append(s)
+            seen.add(s)
+    return uniq
+
+
+import re
+
+
+def _choose_addpoints_and_sid(decoded_list):
+    """
+    From a list of decoded strings, pick the one for adding points and extract SID.
+    Accepts any string that contains 'action=addpoints' and 'sid=' (case-insensitive).
+    Returns (matched_string, sid) or (None, None).
+    """
+    for raw in decoded_list:
+        if not raw:
+            continue
+        # strip any weird invisible chars
+        s = "".join(ch for ch in raw if ch.isprintable()).strip()
+        low = s.lower()
+        if "action=addpoints" in low and "sid=" in low:
+            m = re.search(r"(?:\?|&)\s*sid\s*=\s*([^&#\s]+)", s, flags=re.IGNORECASE)
+            if m:
+                return s, m.group(1)
+    return None, None
+
+
+# ---------- Main UI ----------
 def show_teacher_dashboard(user, is_admin=False):
     teacher_id = user.get("teacher_id")
     st.header("📊 Teacher Dashboard" if not is_admin else "📊 Admin View: Class Deeds")
 
-    # === Shared Class Selector ===
+    # Shared Class Selector (persists across tabs)
     with engine.connect() as conn:
-        # --- 1. Load Class List ---
         if is_admin:
             classes = conn.execute(
                 text("SELECT DISTINCT class_name FROM students ORDER BY class_name")
@@ -26,46 +143,60 @@ def show_teacher_dashboard(user, is_admin=False):
         else:
             classes = conn.execute(
                 text(
-                    "SELECT class_name FROM teacher_class WHERE teacher_id = :tid ORDER BY class_name"
+                    "SELECT class_name FROM teacher_class "
+                    "WHERE teacher_id = :tid ORDER BY class_name"
                 ),
                 {"tid": teacher_id},
             ).fetchall()
 
     class_list = [c[0] for c in classes]
-
     if not class_list:
         st.warning("No classes assigned.")
         return
 
-    selected_class = st.selectbox("🎓 Select Class", class_list, key="class_selector")
-    st.session_state.selected_class = selected_class
+    if "selected_class" not in st.session_state:
+        st.session_state.selected_class = class_list[0]
 
-    # === Tabs ===
+    st.session_state.selected_class = st.selectbox(
+        "🎓 Select Class",
+        class_list,
+        index=(
+            class_list.index(st.session_state.selected_class)
+            if st.session_state.selected_class in class_list
+            else 0
+        ),
+        key="class_selector",
+    )
+    selected_class = st.session_state.selected_class
+
     tabs = st.tabs(
         [
-            "➕ Add Deed",
-            "📷 Scan QR to Add",
-            "📈 Class Insights",
+            "➕ Add Points",
+            "📷 Upload QR to Add Points",
+            "📈 Class Performance",
             "🔥 Top Categories",
-            "🏅 Top Students",
+            "🏅 Student Rankings",
         ]
     )
 
-    with engine.connect() as conn:
-
-        # === TAB 0: Add Deed Manually ===
-        with tabs[0]:
+    # -------- TAB 0: Manual Add Deed --------
+    with tabs[0]:
+        with engine.connect() as conn:
             students = conn.execute(
                 text(
-                    "SELECT id, name FROM students WHERE class_name = :cls ORDER BY name"
+                    "SELECT id, name FROM students "
+                    "WHERE class_name = :cls ORDER BY name"
                 ),
                 {"cls": selected_class},
             ).fetchall()
+
+        if not students:
+            st.info("No students found in this class.")
+        else:
             student_map = {name: sid for sid, name in students}
+            st.subheader("📝 Add Student Points")
 
-            st.subheader("📝 Add Student Deed")
             form_key = f"form_{int(time.time())}"
-
             with st.form(form_key):
                 selected_student_name = st.selectbox(
                     "Select Student", list(student_map.keys())
@@ -89,7 +220,7 @@ def show_teacher_dashboard(user, is_admin=False):
                                 """
                                 INSERT INTO activities (student_id, teacher_id, category, reason, points, created_at)
                                 VALUES (:sid, :tid, :cat, :reason, :pts, :ts)
-                            """
+                                """
                             ),
                             {
                                 "sid": student_id,
@@ -113,142 +244,123 @@ def show_teacher_dashboard(user, is_admin=False):
                 except Exception as e:
                     st.error(f"❌ Error adding deed: {e}")
 
-        # === TAB 1: QR Upload to Add Points ===
-        with tabs[1]:
-            st.subheader("📷 Live Scan QR Code to Add Points")
+    # -------- TAB 1: Upload QR to Add Points (only 'addpoints' accepted) --------
+    with tabs[1]:
+        st.subheader("📷 Upload Student QR (Add Points only)")
+        st.caption(
+            "Upload a photo of the student's card. The card has two QRs—"
+            "we will automatically pick the **Add Points** QR and ignore the **Redeem** QR."
+        )
 
-            st.markdown(
-                """
-            **How to use this:**
+        uploaded = st.file_uploader("Upload QR image", type=["png", "jpg", "jpeg"])
 
-            1. Click "Start Scanner" below.
-            2. Point your phone camera to the student's QR code.
-            3. Student info will auto-fill once scanned.
-            """
-            )
+        if uploaded:
+            decoded = _decode_all_qr_strings_from_image(uploaded)
 
-            # scanned_sid = st.experimental_get_query_params().get("sid", [None])[0]
-            # scanned_action = st.experimental_get_query_params().get("action", [None])[0]
-            scanned_sid = st.query_params.get("sid", None)
-            scanned_action = st.query_params.get("action", None)
-
-            if scanned_sid and scanned_action == "addpoints":
-                student = conn.execute(
-                    text("SELECT id, name, class_name FROM students WHERE id = :sid"),
-                    {"sid": scanned_sid},
-                ).fetchone()
-
-                if not student:
-                    st.error("❌ Student not found.")
-                else:
-                    st.success(f"Scanned: {student.name} ({student.class_name})")
-
-                    with st.form("live_qr_add"):
-                        cat = st.selectbox(
-                            "Deed Category",
-                            [
-                                "Discipline",
-                                "Academics",
-                                "Sports",
-                                "Leadership",
-                                "Other",
-                            ],
-                        )
-                        reason = st.text_input("Reason")
-                        pts = st.number_input("Points", min_value=1, max_value=100)
-                        submit_qr = st.form_submit_button("✅ Add Points")
-
-                    if submit_qr:
-                        try:
-                            with engine.begin() as tx:
-                                tx.execute(
-                                    text(
-                                        """
-                                        INSERT INTO activities (student_id, teacher_id, category, reason, points, created_at)
-                                        VALUES (:sid, :tid, :cat, :reason, :pts, :ts)
-                                    """
-                                    ),
-                                    {
-                                        "sid": scanned_sid,
-                                        "tid": teacher_id,
-                                        "cat": cat,
-                                        "reason": reason,
-                                        "pts": pts,
-                                        "ts": datetime.now(),
-                                    },
-                                )
-                                tx.execute(
-                                    text(
-                                        "UPDATE students SET total_points = total_points + :pts WHERE id = :sid"
-                                    ),
-                                    {"pts": pts, "sid": scanned_sid},
-                                )
-                            st.success(f"{pts} points added to {student.name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
+            if not decoded:
+                st.error(
+                    "No QR code detected in the image. Try a closer, sharper photo and avoid glare."
+                )
             else:
-                st.info("Waiting for QR scan...")
+                matched, sid = _choose_addpoints_and_sid(decoded)
+                if not sid:
+                    st.error(
+                        "We found QR(s), but none is an **Add Points** QR "
+                        "(needs `?action=addpoints&sid=...`)."
+                    )
+                else:
+                    with engine.connect() as conn:
+                        student = conn.execute(
+                            text(
+                                "SELECT id, name, class_name FROM students WHERE id = :sid"
+                            ),
+                            {"sid": sid},
+                        ).fetchone()
 
-            st.markdown("### 📸 Start Scanner")
-            components.html(
-                """
-                <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
-                <div id="reader" style="width: 300px;"></div>
-                <script>
-                    function navigateWithSID(sid) {
-                        const base = window.location.origin + window.location.pathname;
-                        const newUrl = base + "?action=addpoints&sid=" + sid;
-                        window.location.href = newUrl;
-                    }
+                    if not student:
+                        st.error("❌ Student not found.")
+                    else:
+                        st.success(
+                            f"Student: {student.name} (Class: {student.class_name})"
+                        )
 
-                    function scanSuccess(decodedText, decodedResult) {
-                        if (decodedText.includes("sid=")) {
-                            const url = new URL(decodedText);
-                            const sid = url.searchParams.get("sid");
-                            if (sid) {
-                                navigateWithSID(sid);
-                            }
-                        }
-                    }
+                        with st.form("qr_add_form"):
+                            cat = st.selectbox(
+                                "Deed Category",
+                                [
+                                    "Discipline",
+                                    "Academics",
+                                    "Sports",
+                                    "Leadership",
+                                    "Other",
+                                ],
+                            )
+                            reason = st.text_input("Reason / Description")
+                            pts = st.number_input(
+                                "Point Reward", min_value=1, max_value=100, step=1
+                            )
+                            submit_qr = st.form_submit_button("✅ Add Points")
 
-                    const html5QrCode = new Html5Qrcode("reader");
-                    const config = { fps: 10, qrbox: 250 };
-                    Html5Qrcode.getCameras().then(devices => {
-                        if (devices && devices.length) {
-                            html5QrCode.start({ facingMode: "environment" }, config, scanSuccess);
-                        }
-                    }).catch(err => {
-                        document.getElementById("reader").innerText = "Camera error: " + err;
-                    });
-                </script>
-            """,
-                height=400,
-            )
+                        if submit_qr:
+                            try:
+                                with engine.begin() as tx:
+                                    tx.execute(
+                                        text(
+                                            """
+                                            INSERT INTO activities (student_id, teacher_id, category, reason, points, created_at)
+                                            VALUES (:sid, :tid, :cat, :reason, :pts, :ts)
+                                            """
+                                        ),
+                                        {
+                                            "sid": sid,
+                                            "tid": teacher_id,
+                                            "cat": cat,
+                                            "reason": reason,
+                                            "pts": pts,
+                                            "ts": datetime.now(),
+                                        },
+                                    )
+                                    tx.execute(
+                                        text(
+                                            "UPDATE students SET total_points = total_points + :pts WHERE id = :sid"
+                                        ),
+                                        {"pts": pts, "sid": sid},
+                                    )
+                                st.success(
+                                    f"{pts} points added to {student.name} for '{cat}'."
+                                )
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
 
-        # === TAB 2: Class Insights ===
-        with tabs[2]:
-            st.subheader("📊 Class Performance Insights")
+    # -------- TAB 2: Class Insights --------
+    with tabs[2]:
+        st.subheader("📈 Class Performance Insights")
+        with engine.connect() as conn:
             student_points = conn.execute(
                 text(
-                    "SELECT name, total_points FROM students WHERE class_name = :cls ORDER BY total_points DESC"
+                    "SELECT name, total_points FROM students "
+                    "WHERE class_name = :cls ORDER BY total_points DESC"
                 ),
                 {"cls": selected_class},
             ).fetchall()
 
-            df_points = pd.DataFrame(student_points, columns=["Name", "Points"])
-            if not df_points.empty:
-                st.markdown("**Total Points by Student**")
-                chart = (
-                    alt.Chart(df_points)
-                    .mark_bar()
-                    .encode(x=alt.X("Name", sort="-y"), y="Points")
-                    .properties(height=300)
-                )
-                st.altair_chart(chart, use_container_width=True)
+        df_points = pd.DataFrame(student_points, columns=["Name", "Points"])
+        if not df_points.empty:
+            st.markdown("**Total Points by Student**")
+            chart = (
+                alt.Chart(df_points)
+                .mark_bar()
+                .encode(x=alt.X("Name", sort="-y"), y="Points")
+                .properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("No points data yet for this class.")
 
-        # === TAB 3: Category Pie Chart ===
-        with tabs[3]:
+    # -------- TAB 3: Category Distribution --------
+    with tabs[3]:
+        with engine.connect() as conn:
             category_data = conn.execute(
                 text(
                     """
@@ -257,53 +369,122 @@ def show_teacher_dashboard(user, is_admin=False):
                     JOIN students s ON a.student_id = s.id
                     WHERE s.class_name = :cls
                     GROUP BY category
-                """
+                    """
                 ),
                 {"cls": selected_class},
             ).fetchall()
 
-            if category_data:
-                cat_df = pd.DataFrame(category_data, columns=["Category", "Count"])
-                st.markdown("**Deed Category Distribution**")
-                pie = (
-                    alt.Chart(cat_df)
-                    .mark_arc()
-                    .encode(
-                        theta="Count", color="Category", tooltip=["Category", "Count"]
-                    )
-                    .properties(width=400)
+        if category_data:
+            cat_df = pd.DataFrame(category_data, columns=["Category", "Count"])
+            st.markdown("**Deed Category Distribution**")
+            pie = (
+                alt.Chart(cat_df)
+                .mark_arc()
+                .encode(
+                    theta="Count",
+                    color="Category",
+                    tooltip=["Category", "Count"],
                 )
-                st.altair_chart(pie, use_container_width=True)
+                .properties(width=400)
+            )
+            st.altair_chart(pie, use_container_width=True)
+        else:
+            st.info("No deed data yet for this class.")
 
-        # === TAB 4: Top Students ===
-        with tabs[4]:
-            st.subheader("🏅 Top 3 Students & Their Top Deeds")
-            top_students = conn.execute(
+    # -------- TAB 4: Student Rankings --------
+    with tabs[4]:
+        st.subheader("🏆 Student Rankings")
+
+        with engine.connect() as conn:
+            all_students = conn.execute(
                 text(
                     """
                     SELECT id, name, total_points
                     FROM students
                     WHERE class_name = :cls
                     ORDER BY total_points DESC
-                    LIMIT 3
-                """
+                    """
                 ),
                 {"cls": selected_class},
             ).fetchall()
 
+        if not all_students:
+            st.info("No students yet with points in this class.")
+        else:
+            top_students = all_students[:3]
+            bottom_students = all_students[-3:] if len(all_students) > 3 else []
+
+            # --- Helper to fetch breakdown ---
+            def student_category_breakdown(sid):
+                with engine.connect() as conn:
+                    rows = conn.execute(
+                        text(
+                            """
+                            SELECT category,
+                                COUNT(*) as activity_count,
+                                SUM(points) as total_points
+                            FROM activities
+                            WHERE student_id = :sid
+                            GROUP BY category
+                            ORDER BY total_points DESC
+                            """
+                        ),
+                        {"sid": sid},
+                    ).fetchall()
+                return (
+                    pd.DataFrame(
+                        rows, columns=["Category", "Activity Count", "Total Points"]
+                    )
+                    if rows
+                    else None
+                )
+
+            # --- Top 3 ---
+            st.markdown("### 🥇 Top 3 Students")
             for sid, sname, pts in top_students:
-                st.markdown(f"### 🧑‍🎓 {sname} – {pts} pts")
-                deeds = conn.execute(
-                    text(
-                        """
-                        SELECT category, COUNT(*) as count
-                        FROM activities
-                        WHERE student_id = :sid
-                        GROUP BY category
-                        ORDER BY count DESC
-                        LIMIT 3
+                st.markdown(f"**{sname}** – {pts} pts")
+                with st.expander(f"📂 View category breakdown for {sname}"):
+                    df = student_category_breakdown(sid)
+                    if df is not None:
+                        st.table(df)
+                    else:
+                        st.info("No activity data for this student.")
+
+            # --- Bottom 3 ---
+            if bottom_students:
+                st.markdown("### 🪫 Bottom 3 Students")
+                for sid, sname, pts in bottom_students:
+                    st.markdown(f"**{sname}** – {pts} pts")
+                    with st.expander(f"📂 View category breakdown for {sname}"):
+                        df = student_category_breakdown(sid)
+                        if df is not None:
+                            st.table(df)
+                        else:
+                            st.info("No activity data for this student.")
+
+        # --- Class-wide summary ---
+        st.subheader("📊 Class-wide Points by Category")
+        with engine.connect() as conn:
+            category_totals = conn.execute(
+                text(
                     """
-                    ),
-                    {"sid": sid},
-                ).fetchall()
-                st.table(pd.DataFrame(deeds, columns=["Category", "Count"]))
+                    SELECT category,
+                        COUNT(*) as activity_count,
+                        SUM(points) as total_points
+                    FROM activities a
+                    JOIN students s ON a.student_id = s.id
+                    WHERE s.class_name = :cls
+                    GROUP BY category
+                    ORDER BY total_points DESC
+                    """
+                ),
+                {"cls": selected_class},
+            ).fetchall()
+
+        if category_totals:
+            cat_df = pd.DataFrame(
+                category_totals, columns=["Category", "Activity Count", "Total Points"]
+            )
+            st.table(cat_df)
+        else:
+            st.info("No category data yet for this class.")
