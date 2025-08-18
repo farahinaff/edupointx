@@ -324,63 +324,85 @@ def show_teacher_dashboard(user, is_admin=False):
 
     # -------- TAB 4: Student Rankings --------
     with tabs[4]:
-        st.subheader("🏆 Student Rankings")
+        st.subheader("🏅 Top 3 Students & Details")
 
+        # live_points = sum(activities.points) - sum(approved redemptions cost)
         with engine.connect() as conn:
-            all_students = conn.execute(
+            top_rows = conn.execute(
                 text(
-                    "SELECT id, name, total_points FROM students WHERE class_name = :cls ORDER BY total_points DESC"
+                    """
+                    WITH pts AS (
+                        SELECT a.student_id, COALESCE(SUM(a.points),0) AS earned
+                        FROM activities a
+                        JOIN students s ON s.id = a.student_id
+                        WHERE s.class_name = :cls
+                        GROUP BY a.student_id
+                    ),
+                    spend AS (
+                        SELECT r.student_id, COALESCE(SUM(w.cost),0) AS spent
+                        FROM redemptions r
+                        JOIN rewards w ON w.id = r.reward_id
+                        JOIN students s ON s.id = r.student_id
+                        WHERE r.status = 'approved' AND s.class_name = :cls
+                        GROUP BY r.student_id
+                    )
+                    SELECT s.id,
+                        s.name,
+                        s.total_points                     AS stored_total,
+                        COALESCE(p.earned,0)               AS earned_total,
+                        COALESCE(sp.spent,0)               AS spent_total,
+                        (COALESCE(p.earned,0) - COALESCE(sp.spent,0)) AS live_total
+                    FROM students s
+                    LEFT JOIN pts   p  ON p.student_id = s.id
+                    LEFT JOIN spend sp ON sp.student_id = s.id
+                    WHERE s.class_name = :cls
+                    ORDER BY live_total DESC, s.name
+                    LIMIT 3
+                    """
                 ),
                 {"cls": selected_class},
             ).fetchall()
 
-        if not all_students:
-            st.info("No students yet with points.")
+        if not top_rows:
+            st.info("No students yet with points in this class.")
         else:
-            top_students = all_students[:3]
-            bottom_students = all_students[-3:] if len(all_students) > 3 else []
+            import pandas as pd
 
-            def student_breakdown(sid):
+            for sid, sname, stored, earned, spent, live in top_rows:
+                st.markdown(f"### 🧑‍🎓 {sname}")
+                cols = st.columns(3)
+                cols[0].metric("Earned (Activities)", int(earned))
+                cols[1].metric("Spent (Approved Redemptions)", int(spent))
+                cols[2].metric("Live Balance (Earned − Spent)", int(live))
+
+                # Show stored vs live (helps you spot drift)
+                if stored is not None and int(stored) != int(live):
+                    st.warning(
+                        f"Stored total = **{int(stored)}**, but computed live balance = **{int(live)}**. "
+                        "This usually means points were edited manually or not synced."
+                    )
+                else:
+                    st.caption(f"Stored total matches live balance: {int(live)} pts.")
+
+                # Top categories for this student (count + points)
                 with engine.connect() as conn:
-                    rows = conn.execute(
+                    cat_rows = conn.execute(
                         text(
                             """
-                            SELECT category, COUNT(*) as activity_count, SUM(points) as total_points
+                            SELECT category,
+                                COUNT(*)           AS activity_count,
+                                COALESCE(SUM(points),0) AS points_total
                             FROM activities
                             WHERE student_id = :sid
                             GROUP BY category
-                            ORDER BY total_points DESC
+                            ORDER BY points_total DESC, activity_count DESC
+                            LIMIT 5
                             """
                         ),
                         {"sid": sid},
                     ).fetchall()
-                return (
-                    pd.DataFrame(
-                        rows, columns=["Category", "Activity Count", "Total Points"]
-                    )
-                    if rows
-                    else None
+                df_cat = pd.DataFrame(
+                    cat_rows, columns=["Category", "Activities", "Points"]
                 )
-
-            # Top 3
-            st.markdown("### 🥇 Top 3 Students")
-            for sid, sname, pts in top_students:
-                st.markdown(f"**{sname}** – {pts} pts")
-                with st.expander(f"📂 Details for {sname}"):
-                    df = student_breakdown(sid)
-                    if df is not None:
-                        st.table(df)
-                    else:
-                        st.info("No activity data.")
-
-            # Bottom 3
-            if bottom_students:
-                st.markdown("### 🪫 Bottom 3 Students")
-                for sid, sname, pts in bottom_students:
-                    st.markdown(f"**{sname}** – {pts} pts")
-                    with st.expander(f"📂 Details for {sname}"):
-                        df = student_breakdown(sid)
-                        if df is not None:
-                            st.table(df)
-                        else:
-                            st.info("No activity data.")
+                with st.expander("See deed breakdown by category"):
+                    st.table(df_cat)
