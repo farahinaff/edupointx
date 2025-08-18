@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+import re
 
 import altair as alt
 import pandas as pd
@@ -9,7 +10,27 @@ from PIL import Image, ImageOps
 import numpy as np
 import cv2  # from opencv-python-headless
 
-from modules.db import engine
+from modules.db import engine, recalc_all_students
+
+
+# ---- flash helpers ----
+def _flash(msg: str, level: str = "success"):
+    st.session_state["_toast_msg"] = msg
+    st.session_state["_toast_lvl"] = level
+
+
+def _show_flash():
+    msg = st.session_state.pop("_toast_msg", None)
+    lvl = st.session_state.pop("_toast_lvl", "success")
+    if msg:
+        if lvl == "error":
+            st.error(msg)
+        elif lvl == "warning":
+            st.warning(msg)
+        elif lvl == "info":
+            st.info(msg)
+        else:
+            st.success(msg)
 
 
 # ---------- QR helpers ----------
@@ -50,9 +71,6 @@ def _decode_all_qr_strings_from_image(image_file) -> list[str]:
     return uniq
 
 
-import re
-
-
 def _choose_addpoints_and_sid(decoded_list):
     """
     Pick the 'add points' QR among multiple decoded strings.
@@ -79,7 +97,7 @@ def _choose_addpoints_and_sid(decoded_list):
 def show_teacher_dashboard(user, is_admin=False):
     teacher_id = user.get("teacher_id")
     st.header("📊 Teacher Dashboard" if not is_admin else "📊 Admin View: Class Deeds")
-
+    # _show_flash()
     # Shared Class Selector
     with engine.connect() as conn:
         if is_admin:
@@ -130,8 +148,12 @@ def show_teacher_dashboard(user, is_admin=False):
         with engine.connect() as conn:
             students = conn.execute(
                 text(
-                    "SELECT id, name FROM students "
-                    "WHERE class_name = :cls ORDER BY name"
+                    """
+                    SELECT id, name
+                    FROM students
+                    WHERE class_name = :cls
+                    ORDER BY name
+                """
                 ),
                 {"cls": selected_class},
             ).fetchall()
@@ -142,53 +164,60 @@ def show_teacher_dashboard(user, is_admin=False):
             student_map = {name: sid for sid, name in students}
             st.subheader("📝 Add Student Points")
 
-            form_key = f"form_{int(time.time())}"
-            with st.form(form_key):
+            # ✅ Use a fixed form key; avoid time.time() keys
+            with st.form("add_points_form"):
                 selected_student_name = st.selectbox(
-                    "Select Student", list(student_map.keys())
+                    "Select Student", list(student_map.keys()), key="add_pts_student"
                 )
                 deed_category = st.selectbox(
                     "Deed Category",
                     ["Discipline", "Academics", "Sports", "Leadership", "Other"],
+                    key="add_pts_cat",
                 )
-                deed_reason = st.text_input("Reason / Description")
+                deed_reason = st.text_input(
+                    "Reason / Description", key="add_pts_reason"
+                )
                 deed_points = st.number_input(
-                    "Point Reward", min_value=1, max_value=100, step=1
+                    "Point Reward",
+                    min_value=1,
+                    max_value=100,
+                    step=1,
+                    key="add_pts_value",
                 )
                 submitted = st.form_submit_button("✅ Submit")
 
             if submitted:
-                student_id = student_map[selected_student_name]
                 try:
                     with engine.begin() as tx:
                         tx.execute(
                             text(
                                 """
-                                INSERT INTO activities (student_id, teacher_id, category, reason, points, created_at)
-                                VALUES (:sid, :tid, :cat, :reason, :pts, :ts)
-                                """
+                                INSERT INTO activities
+                                    (student_id, teacher_id, category, reason, points, created_at)
+                                VALUES
+                                    (:sid, :tid, :cat, :reason, :pts, :ts)
+                            """
                             ),
                             {
-                                "sid": student_id,
+                                "sid": student_map[selected_student_name],
                                 "tid": teacher_id,
                                 "cat": deed_category,
                                 "reason": deed_reason,
-                                "pts": deed_points,
+                                "pts": int(deed_points),
                                 "ts": datetime.now(),
                             },
                         )
-                        tx.execute(
-                            text(
-                                "UPDATE students SET total_points = total_points + :pts WHERE id = :sid"
-                            ),
-                            {"pts": deed_points, "sid": student_id},
-                        )
+                    # Store a toast for the next render. DO NOT call st.rerun() here.
+                    # _flash(
+                    #     f"Added {int(deed_points)} pts to {selected_student_name}.",
+                    #     "success",
+                    # )
                     st.success(
-                        f"{deed_points} points added to {selected_student_name} for '{deed_category}'"
+                        f"Added {int(deed_points)} pts to {selected_student_name}."
                     )
-                    st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error adding points: {e}")
+                    # _flash(f"❌ {e}", "error")
+                    st.error(f"❌ {e}")
 
     # -------- TAB 1: Upload QR to Add Points --------
     with tabs[1]:
@@ -241,6 +270,7 @@ def show_teacher_dashboard(user, is_admin=False):
                             )
                             submit_qr = st.form_submit_button("✅ Add Points")
 
+                        # QR ADD submit handler
                         if submit_qr:
                             try:
                                 with engine.begin() as tx:
@@ -249,29 +279,21 @@ def show_teacher_dashboard(user, is_admin=False):
                                             """
                                             INSERT INTO activities (student_id, teacher_id, category, reason, points, created_at)
                                             VALUES (:sid, :tid, :cat, :reason, :pts, :ts)
-                                            """
+                                        """
                                         ),
                                         {
-                                            "sid": sid,
+                                            "sid": int(sid),
                                             "tid": teacher_id,
                                             "cat": cat,
                                             "reason": reason,
-                                            "pts": pts,
+                                            "pts": int(pts),
                                             "ts": datetime.now(),
                                         },
                                     )
-                                    tx.execute(
-                                        text(
-                                            "UPDATE students SET total_points = total_points + :pts WHERE id = :sid"
-                                        ),
-                                        {"pts": pts, "sid": sid},
-                                    )
-                                st.success(
-                                    f"{pts} points added to {student.name} for '{cat}'."
-                                )
+                                st.success(f"Added {int(pts)} pts to {student.name}.")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"❌ Error: {e}")
+                                st.error(f"❌ {e}")
 
     # -------- TAB 2: Class Insights --------
     with tabs[2]:
@@ -281,20 +303,22 @@ def show_teacher_dashboard(user, is_admin=False):
         rows = []
         try:
             with engine.connect() as conn:
-                rows = (
-                    conn.execute(
-                        text(
-                            """
-                        SELECT name, total_points
-                        FROM students
-                        WHERE class_name = :cls
-                        ORDER BY total_points DESC, name
+                rows = conn.execute(
+                    text(
                         """
-                        ),
-                        {"cls": selected_class},
-                    ).fetchall()
-                    or []
-                )
+                        SELECT student_name, live_points
+                        FROM v_student_live_points
+                        WHERE class_name = :cls
+                        ORDER BY live_points DESC, student_name
+                    """
+                    ),
+                    {"cls": selected_class},
+                ).fetchall()
+
+            df = pd.DataFrame(
+                [(r[0], int(r[1] or 0)) for r in rows], columns=["Name", "Points"]
+            )
+
         except Exception as e:
             st.error(f"Failed to load class points: {e}")
             rows = []
@@ -352,80 +376,33 @@ def show_teacher_dashboard(user, is_admin=False):
         st.subheader("🏅 Top 3 Students & Details")
 
         # live_points = sum(activities.points) - sum(approved redemptions cost)
+        # Top 3 & Bottom 3 by live_points
         with engine.connect() as conn:
-            top_rows = conn.execute(
+            rows = conn.execute(
                 text(
                     """
-                    WITH pts AS (
-                        SELECT a.student_id, COALESCE(SUM(a.points),0) AS earned
-                        FROM activities a
-                        JOIN students s ON s.id = a.student_id
-                        WHERE s.class_name = :cls
-                        GROUP BY a.student_id
-                    ),
-                    spend AS (
-                        SELECT r.student_id, COALESCE(SUM(w.cost),0) AS spent
-                        FROM redemptions r
-                        JOIN rewards w ON w.id = r.reward_id
-                        JOIN students s ON s.id = r.student_id
-                        WHERE r.status = 'approved' AND s.class_name = :cls
-                        GROUP BY r.student_id
-                    )
-                    SELECT s.id,
-                        s.name,
-                        s.total_points                     AS stored_total,
-                        COALESCE(p.earned,0)               AS earned_total,
-                        COALESCE(sp.spent,0)               AS spent_total,
-                        (COALESCE(p.earned,0) - COALESCE(sp.spent,0)) AS live_total
-                    FROM students s
-                    LEFT JOIN pts   p  ON p.student_id = s.id
-                    LEFT JOIN spend sp ON sp.student_id = s.id
-                    WHERE s.class_name = :cls
-                    ORDER BY live_total DESC, s.name
-                    LIMIT 3
-                    """
+                    SELECT student_id, student_name, earned_points, spent_points, live_points
+                    FROM v_student_live_points
+                    WHERE class_name = :cls
+                    ORDER BY live_points DESC, student_name
+                """
                 ),
                 {"cls": selected_class},
             ).fetchall()
 
-        if not top_rows:
-            st.info("No students yet with points in this class.")
-        else:
-            for sid, sname, stored, earned, spent, live in top_rows:
-                st.markdown(f"### 🧑‍🎓 {sname}")
-                cols = st.columns(3)
-                cols[0].metric("Earned (Activities)", int(earned))
-                cols[1].metric("Spent (Approved Redemptions)", int(spent))
-                cols[2].metric("Live Balance (Earned − Spent)", int(live))
+        df = pd.DataFrame(rows, columns=["ID", "Name", "Earned", "Spent", "Live"])
+        for col in ["Earned", "Spent", "Live"]:
+            df[col] = df[col].apply(lambda x: int(x or 0))
 
-                # Show stored vs live (helps you spot drift)
-                if stored is not None and int(stored) != int(live):
-                    st.warning(
-                        f"Stored total = **{int(stored)}**, but computed live balance = **{int(live)}**. "
-                        "This usually means points were edited manually or not synced."
-                    )
-                else:
-                    st.caption(f"Stored total matches live balance: {int(live)} pts.")
+        top3 = df.head(3)
+        bottom3 = df.tail(3).iloc[::-1]  # lowest 3
 
-                # Top categories for this student (count + points)
-                with engine.connect() as conn:
-                    cat_rows = conn.execute(
-                        text(
-                            """
-                            SELECT category,
-                                COUNT(*)           AS activity_count,
-                                COALESCE(SUM(points),0) AS points_total
-                            FROM activities
-                            WHERE student_id = :sid
-                            GROUP BY category
-                            ORDER BY points_total DESC, activity_count DESC
-                            LIMIT 5
-                            """
-                        ),
-                        {"sid": sid},
-                    ).fetchall()
-                df_cat = pd.DataFrame(
-                    cat_rows, columns=["Category", "Activities", "Points"]
-                )
-                with st.expander("See deed breakdown by category"):
-                    st.table(df_cat)
+        st.markdown("### 🥇 Top 3 (Live Points)")
+        for _, r in top3.iterrows():
+            with st.expander(f"{r['Name']} • {r['Live']} pts"):
+                st.table(pd.DataFrame([r], columns=["Earned", "Spent", "Live"]))
+
+        st.markdown("### 🥉 Bottom 3 (Live Points)")
+        for _, r in bottom3.iterrows():
+            with st.expander(f"{r['Name']} • {r['Live']} pts"):
+                st.table(pd.DataFrame([r], columns=["Earned", "Spent", "Live"]))

@@ -1,5 +1,6 @@
 import streamlit as st
 from sqlalchemy import create_engine
+from sqlalchemy import text
 
 cfg = st.secrets["db"]
 
@@ -12,3 +13,27 @@ engine = create_engine(
     pool_size=5,  # adjust as needed
     max_overflow=10,  # allow extra if needed
 )
+
+
+def recalc_all_students(engine):
+    with engine.begin() as tx:
+        tx.execute(
+            text(
+                """
+                UPDATE students s
+                LEFT JOIN (
+                SELECT a.student_id, COALESCE(SUM(a.points),0) AS earned
+                FROM activities a
+                GROUP BY a.student_id
+                ) e ON e.student_id = s.id
+                LEFT JOIN (
+                SELECT r.student_id, COALESCE(SUM(w.cost),0) AS spent
+                FROM redemptions r
+                JOIN rewards w ON w.id = r.reward_id
+                WHERE r.status = 'approved'
+                GROUP BY r.student_id
+                ) x ON x.student_id = s.id
+                SET s.total_points = COALESCE(e.earned,0) - COALESCE(x.spent,0);
+            """
+            )
+        )

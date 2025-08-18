@@ -1,11 +1,39 @@
+# modules/admin.py
 import streamlit as st
 import pandas as pd
 import altair as alt
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from modules.auth import hash_password
-from modules.db import DB_URL
+from modules.db import engine
 
-engine = create_engine(DB_URL)
+# Try to import the global resync helper; provide a safe fallback if not present
+try:
+    from modules.db import recalc_all_students  # preferred
+except Exception:
+
+    def recalc_all_students(engine_):
+        """Fallback: recompute students.total_points = sum(activities) - sum(approved redemptions)."""
+        with engine_.begin() as tx:
+            tx.execute(
+                text(
+                    """
+                    UPDATE students s
+                    LEFT JOIN (
+                      SELECT a.student_id, COALESCE(SUM(a.points),0) AS earned
+                      FROM activities a
+                      GROUP BY a.student_id
+                    ) e ON e.student_id = s.id
+                    LEFT JOIN (
+                      SELECT r.student_id, COALESCE(SUM(w.cost),0) AS spent
+                      FROM redemptions r
+                      JOIN rewards w ON w.id = r.reward_id
+                      WHERE r.status = 'approved'
+                      GROUP BY r.student_id
+                    ) x ON x.student_id = s.id
+                    SET s.total_points = COALESCE(e.earned,0) - COALESCE(x.spent,0);
+                """
+                )
+            )
 
 
 def show_admin_dashboard(user):
@@ -49,10 +77,13 @@ def show_admin_dashboard(user):
             if not students:
                 st.info("No students found in this class.")
             else:
-                st.dataframe(
-                    pd.DataFrame(students, columns=["ID", "Name", "Points"]),
-                    use_container_width=True,
-                )
+                # coerce points to int (avoid Decimal issues)
+                df = pd.DataFrame(students, columns=["ID", "Name", "Points"])
+                if "Points" in df.columns:
+                    df["Points"] = df["Points"].apply(
+                        lambda x: int(float(x)) if x is not None else 0
+                    )
+                st.dataframe(df, use_container_width=True)
 
             st.markdown("**👨‍🏫 Teachers assigned to this class:**")
             with engine.connect() as conn:
@@ -166,7 +197,7 @@ def show_admin_dashboard(user):
                                 st.success(f"{tname} assigned to {selected_class2}")
                                 st.rerun()
 
-    # --- 🎁 TAB 3: Rewards ---
+    # --- 🎁 TAB 3: Manage Stocks (Rewards) ---
     with tabs[2]:
         st.subheader("🎁 Manage Rewards")
         r_search = st.text_input("Search Rewards", key="reward_search")
@@ -181,6 +212,13 @@ def show_admin_dashboard(user):
             st.info("No rewards found.")
         else:
             r_df = pd.DataFrame(rewards, columns=["ID", "Name", "Cost", "Stock"])
+            # Coerce numeric types
+            r_df["Cost"] = r_df["Cost"].apply(
+                lambda x: int(float(x)) if x is not None else 0
+            )
+            r_df["Stock"] = r_df["Stock"].apply(
+                lambda x: int(float(x)) if x is not None else 0
+            )
             st.dataframe(r_df, use_container_width=True)
 
             with st.expander("➕ Add New Reward"):
@@ -198,8 +236,8 @@ def show_admin_dashboard(user):
                             {
                                 "n": r_name,
                                 "d": r_desc,
-                                "c": r_cost,
-                                "s": r_stock,
+                                "c": int(r_cost),
+                                "s": int(r_stock),
                                 "src": r_source,
                             },
                         )
@@ -220,7 +258,11 @@ def show_admin_dashboard(user):
                                 text(
                                     "UPDATE rewards SET cost = :c, stock = :s WHERE id = :rid"
                                 ),
-                                {"c": new_cost, "s": new_stock, "rid": r_row[0]},
+                                {
+                                    "c": int(new_cost),
+                                    "s": int(new_stock),
+                                    "rid": r_row[0],
+                                },
                             )
                         st.success("Reward updated.")
                         st.rerun()
@@ -233,8 +275,7 @@ def show_admin_dashboard(user):
                     st.warning("Reward deleted.")
                     st.rerun()
 
-    # --- 🧾 TAB 4: Approvals ---
-    # --- 🧾 TAB 4: Manage Redemptions ---
+    # --- 🧾 TAB 4: Stock Approvals / Manage Redemptions ---
     with tabs[3]:
         st.subheader("🧾 Manage Redemptions")
 
@@ -257,8 +298,8 @@ def show_admin_dashboard(user):
         # --- Query ---
         query = """
             SELECT r.id, r.student_id, r.reward_id, r.created_at, r.status,
-                s.name AS student_name, s.class_name, s.total_points,
-                rw.name AS reward_name, rw.cost, rw.stock
+                   s.name AS student_name, s.class_name, s.total_points,
+                   rw.name AS reward_name, rw.cost, rw.stock
             FROM redemptions r
             JOIN students s ON s.id = r.student_id
             JOIN rewards  rw ON rw.id = r.reward_id
@@ -266,7 +307,7 @@ def show_admin_dashboard(user):
         params = {}
 
         if status_filter == "insufficient":
-            # show only pending redemptions where points < cost OR stock <=0
+            # pending where points < cost OR stock <= 0
             query += " WHERE r.status = 'pending' AND (s.total_points < rw.cost OR rw.stock <= 0)"
         else:
             query += " WHERE r.status = :status"
@@ -284,7 +325,7 @@ def show_admin_dashboard(user):
         if not rows:
             st.info(f"No {status_filter} requests.")
         else:
-            # --- Bulk Approve ---
+            # --- Bulk Approve (respects class filter or ALL) ---
             if status_filter == "pending":
                 scope = (
                     f"for {class_filter}"
@@ -307,17 +348,16 @@ def show_admin_dashboard(user):
                                 rcost,
                                 rstock,
                             ) in rows:
-                                student = tx.execute(
+                                # Re-check inside txn
+                                pts = tx.execute(
                                     text(
                                         "SELECT total_points FROM students WHERE id=:sid"
                                     ),
                                     {"sid": sid},
-                                ).fetchone()
-                                if (
-                                    student
-                                    and student.total_points >= rcost
-                                    and rstock > 0
-                                ):
+                                ).scalar()
+                                if pts is None:
+                                    continue
+                                if int(pts) >= int(rcost) and int(rstock) > 0:
                                     tx.execute(
                                         text(
                                             "UPDATE redemptions SET status='approved' WHERE id=:rid"
@@ -328,14 +368,16 @@ def show_admin_dashboard(user):
                                         text(
                                             "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
                                         ),
-                                        {"c": rcost, "sid": sid},
+                                        {"c": int(rcost), "sid": sid},
                                     )
                                     tx.execute(
                                         text(
-                                            "UPDATE rewards SET stock = stock - 1 WHERE id=:rw"
+                                            "UPDATE rewards SET stock = stock - 1 WHERE id = :rw"
                                         ),
                                         {"rw": rwid},
                                     )
+                        # 🔁 Full resync so all tabs reflect immediately
+                        recalc_all_students(engine)
                         st.success(
                             f"All pending redemptions {scope} approved (where valid)."
                         )
@@ -367,11 +409,14 @@ def show_admin_dashboard(user):
                 rstock,
             ) in rows:
                 row_cols = st.columns([1, 3, 2, 2, 1, 1])
+                # Coerce for safe display
+                disp_pts = int(float(spts)) if spts is not None else 0
+                disp_cost = int(float(rcost)) if rcost is not None else 0
+                disp_stock = int(float(rstock)) if rstock is not None else 0
+
                 row_cols[0].write(rid)
-                row_cols[1].write(
-                    f"{sname} ({sclass}) • {spts} pts"
-                )  # show current points
-                row_cols[2].write(f"{rname} ({rcost} pts, stock {rstock})")
+                row_cols[1].write(f"{sname} ({sclass}) • {disp_pts} pts")
+                row_cols[2].write(f"{rname} ({disp_cost} pts, stock {disp_stock})")
                 row_cols[3].write(str(created_at))
                 row_cols[4].write(rstatus)
 
@@ -383,15 +428,15 @@ def show_admin_dashboard(user):
                             if st.button("✅", key=f"approve_{rid}"):
                                 try:
                                     with engine.begin() as tx:
-                                        student = tx.execute(
+                                        pts = tx.execute(
                                             text(
                                                 "SELECT total_points FROM students WHERE id=:sid"
                                             ),
                                             {"sid": sid},
-                                        ).fetchone()
-                                        if student.total_points < rcost:
+                                        ).scalar()
+                                        if pts is None or int(pts) < disp_cost:
                                             st.warning("Not enough points.")
-                                        elif rstock <= 0:
+                                        elif disp_stock <= 0:
                                             st.warning("Out of stock.")
                                         else:
                                             tx.execute(
@@ -404,14 +449,16 @@ def show_admin_dashboard(user):
                                                 text(
                                                     "UPDATE students SET total_points = total_points - :c WHERE id=:sid"
                                                 ),
-                                                {"c": rcost, "sid": sid},
+                                                {"c": disp_cost, "sid": sid},
                                             )
                                             tx.execute(
                                                 text(
-                                                    "UPDATE rewards SET stock = stock - 1 WHERE id=:rw"
+                                                    "UPDATE rewards SET stock = stock - 1 WHERE id = :rw"
                                                 ),
                                                 {"rw": rwid},
                                             )
+                                    # 🔁 Resync right after single approval
+                                    recalc_all_students(engine)
                                     st.success("Approved.")
                                     st.rerun()
                                 except Exception as e:
@@ -473,31 +520,49 @@ def show_admin_dashboard(user):
         col1, col2 = st.columns(2)
         with col1:
             if status_rows:
-                st.table(pd.DataFrame(status_rows, columns=["Status", "Count"]))
+                df_status = pd.DataFrame(status_rows, columns=["Status", "Count"])
+                df_status["Count"] = df_status["Count"].apply(
+                    lambda x: int(float(x)) if x is not None else 0
+                )
+                st.table(df_status)
             else:
                 st.info("No redemption data yet.")
         with col2:
-            st.metric(
-                "Total Points Spent (Approved)",
-                int(total_points_row.pts) if total_points_row else 0,
+            total_pts = (
+                int(float(total_points_row.pts))
+                if total_points_row and total_points_row.pts is not None
+                else 0
             )
+            st.metric("Total Points Spent (Approved)", total_pts)
 
         if top_rewards:
-            st.markdown("**Top Rewards**")
-            st.table(pd.DataFrame(top_rewards, columns=["Reward", "Redemption Count"]))
-        if top_students:
-            st.markdown("**Top Students**")
-            st.table(
-                pd.DataFrame(
-                    top_students,
-                    columns=["Student", "Redemption Count", "Points Spent"],
-                )
+            df_tr = pd.DataFrame(top_rewards, columns=["Reward", "Redemption Count"])
+            df_tr["Redemption Count"] = df_tr["Redemption Count"].apply(
+                lambda x: int(float(x)) if x is not None else 0
             )
+            st.markdown("**Top Rewards**")
+            st.table(df_tr)
+
+        if top_students:
+            df_ts = pd.DataFrame(
+                top_students, columns=["Student", "Redemption Count", "Points Spent"]
+            )
+            df_ts["Redemption Count"] = df_ts["Redemption Count"].apply(
+                lambda x: int(float(x)) if x is not None else 0
+            )
+            df_ts["Points Spent"] = df_ts["Points Spent"].apply(
+                lambda x: int(float(x)) if x is not None else 0
+            )
+            st.markdown("**Top Students**")
+            st.table(df_ts)
+
         if ts_rows:
-            st.markdown("**Approvals Over Time**")
-            df_ts = pd.DataFrame(ts_rows, columns=["Date", "Approved Count"])
+            df_line = pd.DataFrame(ts_rows, columns=["Date", "Approved Count"])
+            df_line["Approved Count"] = df_line["Approved Count"].apply(
+                lambda x: int(float(x)) if x is not None else 0
+            )
             chart = (
-                alt.Chart(df_ts)
+                alt.Chart(df_line)
                 .mark_line(point=True)
                 .encode(x="Date:T", y="Approved Count:Q")
                 .properties(height=300)
