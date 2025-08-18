@@ -9,9 +9,7 @@ from PIL import Image, ImageOps
 import numpy as np
 import cv2  # from opencv-python-headless
 
-from modules.db import DB_URL
-
-engine = create_engine(DB_URL)
+from modules.db import engine
 
 
 # ---------- QR helpers ----------

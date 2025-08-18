@@ -2,11 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 import altair as alt
-from modules.db import DB_URL  # assuming you use a central db.py for connection
-
-from modules.db import DB_URL
-
-engine = create_engine(DB_URL)
+from modules.db import engine
 
 
 def show_student_dashboard(user):

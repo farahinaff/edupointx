@@ -1,10 +1,8 @@
 # modules/qr_deed.py
 import streamlit as st
 from sqlalchemy import create_engine, text
-from modules.db import DB_URL
+from modules.db import engine
 from datetime import datetime
-
-engine = create_engine(DB_URL)
 
 
 def show_qr_deed_submission(student_id):

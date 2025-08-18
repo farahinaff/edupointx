@@ -1,9 +1,7 @@
 import streamlit as st
 from sqlalchemy import create_engine, text
-from .auth import hash_password
-from modules.db import DB_URL
 
-engine = create_engine(DB_URL)
+from modules.db import engine
 
 
 def show_signup_form():

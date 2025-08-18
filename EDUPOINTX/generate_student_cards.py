@@ -3,10 +3,7 @@ from sqlalchemy import create_engine, text
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
 from qrcode.constants import ERROR_CORRECT_H
-from modules.db import DB_URL
-
-# === DB CONNECTION ===
-engine = create_engine(DB_URL)
+from modules.db import engine
 
 # === BASE APP URL ===
 BASE_URL = "https://edupointx.streamlit.app"
