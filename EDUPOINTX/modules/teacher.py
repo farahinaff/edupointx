@@ -275,27 +275,52 @@ def show_teacher_dashboard(user, is_admin=False):
 
     # -------- TAB 2: Class Insights --------
     with tabs[2]:
+        # ---  📈 Class Performance Insights (defensive & Decimal-safe) ---
         st.subheader("📈 Class Performance Insights")
-        with engine.connect() as conn:
-            student_points = conn.execute(
-                text(
-                    "SELECT name, total_points FROM students WHERE class_name = :cls ORDER BY total_points DESC"
-                ),
-                {"cls": selected_class},
-            ).fetchall()
 
-        df_points = pd.DataFrame(student_points, columns=["Name", "Points"])
-        if not df_points.empty:
+        rows = []
+        try:
+            with engine.connect() as conn:
+                rows = (
+                    conn.execute(
+                        text(
+                            """
+                        SELECT name, total_points
+                        FROM students
+                        WHERE class_name = :cls
+                        ORDER BY total_points DESC, name
+                        """
+                        ),
+                        {"cls": selected_class},
+                    ).fetchall()
+                    or []
+                )
+        except Exception as e:
+            st.error(f"Failed to load class points: {e}")
+            rows = []
+
+        if not rows:
+            st.info("No points data yet for this class.")
+        else:
+            # Ensure we hand Pandas a plain list of tuples (not Row objects)
+            data = [(r[0], r[1]) for r in rows]
+            df_points = pd.DataFrame(data, columns=["Name", "Points"])
+
+            # Coerce Decimals/None safely -> int
+            df_points["Points"] = (
+                df_points["Points"]
+                .apply(lambda x: 0 if x is None else int(float(x)))
+                .astype(int)
+            )
+
             st.markdown("**Total Points by Student**")
             chart = (
                 alt.Chart(df_points)
                 .mark_bar()
-                .encode(x=alt.X("Name", sort="-y"), y="Points")
+                .encode(x=alt.X("Name:N", sort="-y"), y=alt.Y("Points:Q"))
                 .properties(height=300)
             )
             st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No points yet for this class.")
 
     # -------- TAB 3: Top Categories --------
     with tabs[3]:
@@ -366,8 +391,6 @@ def show_teacher_dashboard(user, is_admin=False):
         if not top_rows:
             st.info("No students yet with points in this class.")
         else:
-            import pandas as pd
-
             for sid, sname, stored, earned, spent, live in top_rows:
                 st.markdown(f"### 🧑‍🎓 {sname}")
                 cols = st.columns(3)
