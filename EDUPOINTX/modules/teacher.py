@@ -302,7 +302,9 @@ def show_teacher_dashboard(user, is_admin=False):
 
         rows = []
         try:
-            with engine.connect() as conn:
+            with engine.connect().execution_options(
+                isolation_level="READ COMMITTED"
+            ) as conn:
                 rows = conn.execute(
                     text(
                         """
@@ -348,7 +350,9 @@ def show_teacher_dashboard(user, is_admin=False):
 
     # -------- TAB 3: Top Categories --------
     with tabs[3]:
-        with engine.connect() as conn:
+        with engine.connect().execution_options(
+            isolation_level="READ COMMITTED"
+        ) as conn:
             category_data = conn.execute(
                 text(
                     """
@@ -377,7 +381,9 @@ def show_teacher_dashboard(user, is_admin=False):
 
         # live_points = sum(activities.points) - sum(approved redemptions cost)
         # Top 3 & Bottom 3 by live_points
-        with engine.connect() as conn:
+        with engine.connect().execution_options(
+            isolation_level="READ COMMITTED"
+        ) as conn:
             rows = conn.execute(
                 text(
                     """
