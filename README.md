@@ -1,68 +1,76 @@
 # EduPointX
 
-EduPointX now includes two app paths:
+EduPointX now runs as a publishable FastAPI web app with `EDUPOINTX/main.py` as the deployment source.
 
-- `main.py`: the original Streamlit prototype
-- `mobile_app/`: a new mobile-first Progressive Web App
+## Source Of Truth
 
-## Mobile App
+- Main app entrypoint: `EDUPOINTX/main.py`
+- Web UI assets: `EDUPOINTX/static/`
+- Shared data/backend modules: `EDUPOINTX/`
+- Legacy design assets still used by the web app: `EDUPOINTX/assets/`
 
-The new mobile app is designed to be published online and used from a phone like an installable app.
+## Local Run
 
-### What changed
-
-- Added a `FastAPI` backend for login, signup, student dashboards, teacher actions, rewards, and admin overview.
-- Added a mobile-first PWA frontend with responsive UI, manifest, and service worker.
-- Replaced the old private MySQL dependency for this path with a free default SQLite database.
-- Seeded the database with demo data so the app works immediately after startup.
-
-### Run locally
+Install with `pip`:
 
 ```bash
 pip install -r requirements.txt
-uvicorn mobile_app.main:app --reload
+uvicorn EDUPOINTX.main:app --reload
+```
+
+Install with Poetry:
+
+```bash
+poetry install
+poetry run uvicorn EDUPOINTX.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000`.
 
-### Demo accounts
+## Demo Accounts
 
 - Student: `ali` / `password123`
 - Teacher: `hassan` / `password123`
 - Admin: `aishah` / `password123`
 
-### Free and accessible database
+## Database
 
-The mobile app uses SQLite by default and stores its data in:
+The app uses SQLite by default.
 
-`mobile_app/data/edupointx_mobile.db`
+- Local default DB: `EDUPOINTX/data/edupointx.db`
+- Render persistent DB path: `/var/data/edupointx.db`
 
-This makes the project:
+The app automatically uses `/var/data` when that disk exists, which makes Render setup simple.
 
-- free to run locally
-- easy to deploy without private DB secrets
-- immediately usable with seeded demo data
+## Render Deployment
 
-If you want free hosted persistence later, set `DATABASE_URL` to a free hosted Postgres database such as Supabase or Neon.
+This repo includes `render.yaml` and uses:
 
-### Publish online
+- Build command:
+  `pip install -r requirements.txt`
+- Start command:
+  `uvicorn EDUPOINTX.main:app --host 0.0.0.0 --port $PORT`
+- Persistent disk mount:
+  `/var/data`
 
-You can publish this app on a free Python-friendly host like Render or Railway.
+### Render Steps
 
-Build/install command:
+1. Push this repo to GitHub.
+2. In Render, create a new Web Service from the repo.
+3. Let Render detect `render.yaml`.
+4. Deploy.
+5. Render will mount a persistent disk at `/var/data`.
+6. The app will automatically create and use `/var/data/edupointx.db`.
+7. Open the Render public URL from any device.
 
-```bash
-pip install -r requirements.txt
-```
+## QR Flow
 
-Start command:
+The app supports both:
 
-```bash
-uvicorn mobile_app.main:app --host 0.0.0.0 --port $PORT
-```
+- QR-style direct links such as `?action=addpoints&sid=1` and `?action=redeem&sid=1`
+- Teacher QR image upload for add-points flow
 
-After deployment, users can open the URL on a phone and choose `Add to Home Screen` to install it like a mobile app.
+## Notes
 
-### Scope note
-
-This is now a publishable mobile web app (PWA). If you want true Google Play / Apple App Store packaging next, the clean follow-up step is wrapping this PWA with Capacitor.
+- The old Streamlit app is no longer the deployment path.
+- `EDUPOINTX/main.py` is now the active online app source.

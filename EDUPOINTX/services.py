@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Activity, Reward, Student, Teacher, TeacherClass, User
+from .models import Activity, Redemption, Reward, Student, Teacher, TeacherClass, User
 
 
 def hash_password(password: str) -> str:
@@ -22,13 +22,13 @@ def ensure_demo_data(session: Session) -> None:
         return
 
     students = [
-        Student(name="Ali Karim", class_name="1 Bestari", total_points=120),
-        Student(name="Fatimah Zahra", class_name="1 Bestari", total_points=150),
-        Student(name="Ahmad Fahmi", class_name="1 Bestari", total_points=90),
-        Student(name="Siti Nabila", class_name="2 Amanah", total_points=180),
-        Student(name="Muhammad Danial", class_name="2 Amanah", total_points=160),
+        Student(name="Ali Karim", class_name="1 Bestari", gender="male", total_points=120),
+        Student(name="Fatimah Zahra", class_name="1 Bestari", gender="female", total_points=150),
+        Student(name="Ahmad Fahmi", class_name="1 Bestari", gender="male", total_points=90),
+        Student(name="Siti Nabila", class_name="2 Amanah", gender="female", total_points=180),
+        Student(name="Muhammad Danial", class_name="2 Amanah", gender="male", total_points=160),
     ]
-    teachers = [Teacher(name="Mr. Hassan"), Teacher(name="Ms. Aishah")]
+    teachers = [Teacher(name="Mr. Hassan", gender="male"), Teacher(name="Ms. Aishah", gender="female")]
     rewards = [
         Reward(
             name="Stationery Set",
@@ -89,6 +89,7 @@ def ensure_demo_data(session: Session) -> None:
             ),
         ]
     )
+    session.flush()
     session.add_all(
         [
             User(
@@ -117,4 +118,30 @@ def ensure_demo_data(session: Session) -> None:
             ),
         ]
     )
+    session.add(
+        Redemption(
+            student_id=students[0].id,
+            reward_id=rewards[0].id,
+            status="approved",
+            created_at=datetime(2025, 7, 15, 9, 30, 0),
+        )
+    )
     session.commit()
+
+
+def recalc_student_points(session: Session, student_id: int) -> int:
+    earned = session.scalar(
+        select(func.coalesce(func.sum(Activity.points), 0)).where(Activity.student_id == student_id)
+    )
+    spent = session.scalar(
+        select(func.coalesce(func.sum(Reward.cost), 0))
+        .select_from(Redemption)
+        .join(Reward, Reward.id == Redemption.reward_id)
+        .where(Redemption.student_id == student_id, Redemption.status == "approved")
+    )
+    total = int(earned or 0) - int(spent or 0)
+    student = session.get(Student, student_id)
+    if student:
+        student.total_points = total
+        session.flush()
+    return total

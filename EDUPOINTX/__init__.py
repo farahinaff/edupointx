@@ -1,0 +1,1 @@
+"""EduPointX app package."""

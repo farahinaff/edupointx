@@ -14,10 +14,12 @@ class Student(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     class_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    gender: Mapped[str | None] = mapped_column(String(20))
     total_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     activities: Mapped[list["Activity"]] = relationship(back_populates="student")
     user: Mapped["User | None"] = relationship(back_populates="student", uselist=False)
+    redemptions: Mapped[list["Redemption"]] = relationship(back_populates="student")
 
 
 class Teacher(Base):
@@ -25,6 +27,7 @@ class Teacher(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    gender: Mapped[str | None] = mapped_column(String(20))
 
     activities: Mapped[list["Activity"]] = relationship(back_populates="teacher")
     classes: Mapped[list["TeacherClass"]] = relationship(back_populates="teacher")
@@ -66,6 +69,22 @@ class Reward(Base):
     cost: Mapped[int] = mapped_column(Integer, nullable=False)
     stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     source: Mapped[str] = mapped_column(String(30), default="School", nullable=False)
+    redemptions: Mapped[list["Redemption"]] = relationship(back_populates="reward")
+
+
+class Redemption(Base):
+    __tablename__ = "redemptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False)
+    reward_id: Mapped[int] = mapped_column(ForeignKey("rewards.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    student: Mapped[Student] = relationship(back_populates="redemptions")
+    reward: Mapped[Reward] = relationship(back_populates="redemptions")
 
 
 class User(Base):
