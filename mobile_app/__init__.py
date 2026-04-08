@@ -1,0 +1,1 @@
+"""EduPointX mobile app package."""

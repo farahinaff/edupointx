@@ -1,0 +1,9 @@
+{
+  "name": "EduPointX Mobile",
+  "short_name": "EduPointX",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4efe6",
+  "theme_color": "#0f766e",
+  "description": "Mobile-first school points and rewards app."
+}
