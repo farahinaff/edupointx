@@ -584,6 +584,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/version")
+def version() -> dict[str, str]:
+    return {"version": "2.0.0", "commit": "8e1a8bc", "branch": "dev"}
+
+
 @app.get("/api/classes")
 def classes(db: Session = Depends(get_db)) -> list[str]:
     return list(db.scalars(select(Student.class_name).distinct().order_by(Student.class_name)))
