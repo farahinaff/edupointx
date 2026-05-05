@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
-import numpy as np
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -53,6 +51,13 @@ class SignupRequest(BaseModel):
 
 class ActivityCreate(BaseModel):
     student_id: int
+    category: str
+    reason: str
+    points: int = Field(ge=1, le=100)
+
+
+class ActivityBulkCreate(BaseModel):
+    student_ids: list[int] = Field(min_length=1)
     category: str
     reason: str
     points: int = Field(ge=1, le=100)
@@ -114,6 +119,12 @@ def get_display_name(user: User, db: Session) -> str:
 
 
 def decode_qr_strings(image_bytes: bytes) -> list[str]:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="QR scanning dependency is not installed.") from exc
+
     np_bytes = np.frombuffer(image_bytes, dtype=np.uint8)
     image = cv2.imdecode(np_bytes, cv2.IMREAD_COLOR)
     if image is None:
@@ -150,6 +161,44 @@ def choose_addpoints_sid(decoded_list: list[str]) -> tuple[str | None, str | Non
                 sid = parts[1].split("&", 1)[0].strip()
                 return raw, sid
     return None, None
+
+
+def get_students_for_activity(db: Session, student_ids: list[int]) -> list[Student]:
+    unique_ids = list(dict.fromkeys(student_ids))
+    if not unique_ids:
+        raise HTTPException(status_code=400, detail="Select at least one student.")
+    students = db.scalars(select(Student).where(Student.id.in_(unique_ids))).all()
+    students_by_id = {student.id: student for student in students}
+    missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Student(s) not found: {', '.join(str(student_id) for student_id in missing_ids)}.",
+        )
+    return [students_by_id[student_id] for student_id in unique_ids]
+
+
+def ensure_teacher_can_award_students(db: Session, teacher_id: int, students: list[Student]) -> None:
+    user = db.scalar(select(User).where(User.teacher_id == teacher_id))
+    is_admin = bool(user and user.role == "admin")
+    if is_admin:
+        return
+
+    class_names = sorted({student.class_name for student in students})
+    assigned_classes = set(
+        db.scalars(
+            select(TeacherClass.class_name).where(
+                TeacherClass.teacher_id == teacher_id,
+                TeacherClass.class_name.in_(class_names),
+            )
+        )
+    )
+    unauthorized_classes = [class_name for class_name in class_names if class_name not in assigned_classes]
+    if unauthorized_classes:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Teacher is not assigned to class(es): {', '.join(unauthorized_classes)}.",
+        )
 
 
 def build_student_points_rows(db: Session, class_name: str) -> list[dict[str, int | str]]:
@@ -417,6 +466,27 @@ def build_admin_dashboard(db: Session, selected_class: str | None, redemption_st
         .order_by(func.date(Redemption.created_at))
     ).all()
 
+    transaction_query = (
+        select(
+            Activity.id,
+            Student.id,
+            Student.name,
+            Student.class_name,
+            Teacher.name,
+            Activity.category,
+            Activity.reason,
+            Activity.points,
+            Activity.created_at,
+        )
+        .join(Student, Student.id == Activity.student_id)
+        .outerjoin(Teacher, Teacher.id == Activity.teacher_id)
+        .order_by(desc(Activity.created_at), desc(Activity.id))
+        .limit(100)
+    )
+    if class_name:
+        transaction_query = transaction_query.where(Student.class_name == class_name)
+    point_transactions = db.execute(transaction_query).all()
+
     return {
         "classes": class_names,
         "selected_class": class_name,
@@ -456,6 +526,30 @@ def build_admin_dashboard(db: Session, selected_class: str | None, redemption_st
             ],
             "timeline": [{"date": str(date), "count": int(count)} for date, count in timeline],
         },
+        "point_transactions": [
+            {
+                "id": activity_id,
+                "student_id": student_id,
+                "student_name": student_name,
+                "class_name": student_class,
+                "teacher_name": teacher_name or "Unknown",
+                "category": category,
+                "reason": reason,
+                "points": int(points),
+                "date": created_at.isoformat(),
+            }
+            for (
+                activity_id,
+                student_id,
+                student_name,
+                student_class,
+                teacher_name,
+                category,
+                reason,
+                points,
+                created_at,
+            ) in point_transactions
+        ],
     }
 
 
@@ -617,19 +711,8 @@ def teacher_dashboard(teacher_id: int, class_name: str, db: Session = Depends(ge
 
 @app.post("/api/teachers/{teacher_id}/activities")
 def add_activity(teacher_id: int, payload: ActivityCreate, db: Session = Depends(get_db)) -> dict[str, str]:
-    student = db.get(Student, payload.student_id)
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
-    allowed = db.scalar(
-        select(TeacherClass).where(
-            TeacherClass.teacher_id == teacher_id,
-            TeacherClass.class_name == student.class_name,
-        )
-    )
-    user = db.scalar(select(User).where(User.teacher_id == teacher_id))
-    is_admin = bool(user and user.role == "admin")
-    if not allowed and not is_admin:
-        raise HTTPException(status_code=403, detail="Teacher is not assigned to this class.")
+    student = get_students_for_activity(db, [payload.student_id])[0]
+    ensure_teacher_can_award_students(db, teacher_id, [student])
 
     db.add(
         Activity(
@@ -643,6 +726,33 @@ def add_activity(teacher_id: int, payload: ActivityCreate, db: Session = Depends
     recalc_student_points(db, payload.student_id)
     db.commit()
     return {"message": "Points added successfully."}
+
+
+@app.post("/api/teachers/{teacher_id}/activities/bulk")
+def add_bulk_activities(
+    teacher_id: int,
+    payload: ActivityBulkCreate,
+    db: Session = Depends(get_db),
+) -> dict[str, int | str]:
+    students = get_students_for_activity(db, payload.student_ids)
+    ensure_teacher_can_award_students(db, teacher_id, students)
+
+    for student in students:
+        db.add(
+            Activity(
+                student_id=student.id,
+                teacher_id=teacher_id,
+                category=payload.category,
+                reason=payload.reason,
+                points=payload.points,
+            )
+        )
+
+    db.flush()
+    for student in students:
+        recalc_student_points(db, student.id)
+    db.commit()
+    return {"message": f"Points added to {len(students)} student(s).", "count": len(students)}
 
 
 @app.get("/api/admin/dashboard")
