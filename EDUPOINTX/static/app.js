@@ -334,15 +334,27 @@ function renderTeacherTab(data) {
       <article class="card">
         <h4>Add Student Points</h4>
         <form class="stack" id="teacherAddForm">
-          <label>Select Student<select name="student_id">${data.students
-            .map((student) => `<option value="${student.id}">${escapeHtml(student.name)}</option>`)
-            .join("")}</select></label>
+          <div class="field-group">
+            <span class="field-label">Select Students</span>
+            <label class="check-row select-all">
+              <input type="checkbox" id="selectAllStudents" />
+              <span>All students in ${escapeHtml(data.class_name)}</span>
+            </label>
+            <div class="check-list">${data.students.length ? data.students
+              .map(
+                (student) => `<label class="check-row">
+                  <input type="checkbox" name="student_ids" value="${student.id}" />
+                  <span>${escapeHtml(student.name)}</span>
+                </label>`
+              )
+              .join("") : `<p class="meta">No students found in this class.</p>`}</div>
+          </div>
           <label>Deed Category<select name="category">${deedCategories
             .map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
             .join("")}</select></label>
           <label>Reason / Description<input name="reason" required /></label>
           <label>Point Reward<input name="points" type="number" min="1" max="100" value="10" required /></label>
-          <button type="submit">Submit</button>
+          <button type="submit" ${data.students.length ? "" : "disabled"}>Submit</button>
           ${message("", "")}
         </form>
       </article>
@@ -424,14 +436,33 @@ async function renderTeacherDashboard() {
   });
   const addForm = document.getElementById("teacherAddForm");
   if (addForm) {
+    const studentCheckboxes = Array.from(addForm.querySelectorAll("[name='student_ids']"));
+    const selectAll = document.getElementById("selectAllStudents");
+    selectAll?.addEventListener("change", () => {
+      selectAll.indeterminate = false;
+      studentCheckboxes.forEach((checkbox) => {
+        checkbox.checked = selectAll.checked;
+      });
+    });
+    studentCheckboxes.forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        const checkedCount = studentCheckboxes.filter((item) => item.checked).length;
+        if (selectAll) {
+          selectAll.checked = studentCheckboxes.length > 0 && checkedCount === studentCheckboxes.length;
+          selectAll.indeterminate = checkedCount > 0 && checkedCount < studentCheckboxes.length;
+        }
+      });
+    });
     addForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(addForm);
+      const studentIds = formData.getAll("student_ids").map(Number).filter(Boolean);
       try {
-        await api(`/api/teachers/${state.user.teacher_id}/activities`, {
+        if (!studentIds.length) throw new Error("Select at least one student.");
+        await api(`/api/teachers/${state.user.teacher_id}/activities/bulk`, {
           method: "POST",
           body: JSON.stringify({
-            student_id: Number(formData.get("student_id")),
+            student_ids: studentIds,
             category: formData.get("category"),
             reason: formData.get("reason"),
             points: Number(formData.get("points")),
@@ -501,6 +532,7 @@ function adminTabs() {
     { id: "teacher-assignment", label: "Teacher Assignment" },
     { id: "manage-stocks", label: "Manage Stocks" },
     { id: "stock-approvals", label: "Stock Approvals" },
+    { id: "point-transactions", label: "Point Transactions" },
     { id: "redemption-insights", label: "Redemption Insights" },
     { id: "reset-password", label: "Reset Password" },
   ];
@@ -559,6 +591,14 @@ function renderAdminContent(data) {
       ${data.redemptions.length ? `<table class="table"><thead><tr><th>Student</th><th>Class</th><th>Pts</th><th>Reward</th><th>Cost</th><th>Stock</th><th>Status</th><th>Date</th><th>Decision</th></tr></thead><tbody>${data.redemptions.map((row) => `<tr>
         <td>${escapeHtml(row.student_name)}</td><td>${escapeHtml(row.class_name)}</td><td>${row.points}</td><td>${escapeHtml(row.reward_name)}</td><td>${row.cost}</td><td>${row.stock}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(new Date(row.date).toLocaleString())}</td><td><select data-redemption-decision="${row.id}"><option value="">-</option><option value="Approve">Approve</option><option value="Reject">Reject</option></select></td>
       </tr>`).join("")}</tbody></table><button id="applyRedemptionDecisions">Apply Decisions</button>` : `<p class="meta">No ${escapeHtml(state.adminRedemptionStatus)} requests.</p>`}
+    </article>`;
+  }
+  if (state.adminTab === "point-transactions") {
+    return `<article class="card">
+      <h4>Point Transactions</h4>
+      ${data.point_transactions.length ? `<table class="table"><thead><tr><th>Student</th><th>Class</th><th>Teacher</th><th>Category</th><th>Reason</th><th>Points</th><th>Date</th></tr></thead><tbody>${data.point_transactions.map((row) => `<tr>
+        <td>${escapeHtml(row.student_name)}</td><td>${escapeHtml(row.class_name)}</td><td>${escapeHtml(row.teacher_name)}</td><td>${escapeHtml(row.category)}</td><td>${escapeHtml(row.reason)}</td><td>${row.points}</td><td>${escapeHtml(new Date(row.date).toLocaleString())}</td>
+      </tr>`).join("")}</tbody></table>` : `<p class="meta">No point transactions found for this class.</p>`}
     </article>`;
   }
   if (state.adminTab === "redemption-insights") {

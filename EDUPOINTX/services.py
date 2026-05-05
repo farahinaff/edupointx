@@ -130,6 +130,7 @@ def ensure_demo_data(session: Session) -> None:
 
 
 def recalc_student_points(session: Session, student_id: int) -> int:
+    session.flush()
     earned = session.scalar(
         select(func.coalesce(func.sum(Activity.points), 0)).where(Activity.student_id == student_id)
     )
