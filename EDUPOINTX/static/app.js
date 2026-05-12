@@ -1,6 +1,30 @@
 const appRoot = document.getElementById("appRoot");
+
+function isValidUser(user) {
+  return (
+    user &&
+    typeof user === "object" &&
+    typeof user.username === "string" &&
+    typeof user.role === "string" &&
+    ["student", "teacher", "admin"].includes(user.role)
+  );
+}
+
+function loadStoredUser() {
+  const rawValue = localStorage.getItem("edupointx-user");
+  if (!rawValue) return null;
+  try {
+    const user = JSON.parse(rawValue);
+    if (isValidUser(user)) return user;
+  } catch (_error) {
+    // ignore invalid JSON
+  }
+  localStorage.removeItem("edupointx-user");
+  return null;
+}
+
 const state = {
-  user: JSON.parse(localStorage.getItem("edupointx-user") || "null"),
+  user: loadStoredUser(),
   page: "welcome",
   signupRole: null,
   classes: [],
@@ -52,6 +76,57 @@ function setPage(page) {
 
 function message(text = "", kind = "") {
   return `<p class="message ${kind}">${escapeHtml(text)}</p>`;
+}
+
+function getToastRoot() {
+  let root = document.getElementById("toastRoot");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "toastRoot";
+    root.className = "toast-root";
+    document.body.appendChild(root);
+  }
+  return root;
+}
+
+function showToast(text, kind = "success") {
+  const root = getToastRoot();
+  const toast = document.createElement("div");
+  toast.className = `toast ${kind}`;
+  toast.setAttribute("role", "status");
+  toast.textContent = text || (kind === "error" ? "Process failed." : "Process completed successfully.");
+  root.appendChild(toast);
+  window.setTimeout(() => {
+    toast.classList.add("hide");
+    window.setTimeout(() => toast.remove(), 260);
+  }, 3600);
+}
+
+function showActionSuccess(result, fallback = "Process completed successfully.") {
+  showToast((result && result.message) || fallback, "success");
+}
+
+function showActionError(error, fallback = "Process failed.") {
+  showToast((error && error.message) || fallback, "error");
+}
+
+async function syncDashboardClassToQrClass(className, availableClasses = []) {
+  if (!className) return;
+  if (availableClasses.includes(className)) {
+    state.teacherClass = className;
+    const teacherClassSelect = document.getElementById("teacherClass");
+    if (teacherClassSelect) teacherClassSelect.value = className;
+  } else if (state.user?.role !== "admin") {
+    showToast(`QR belongs to ${className}, but this teacher account is not assigned to that class.`, "error");
+  }
+
+  const adminClasses = state.classes.length ? state.classes : availableClasses;
+  if (state.user?.role === "admin" && adminClasses.includes(className)) {
+    state.adminClass = className;
+    const adminClassSelect = document.getElementById("adminClass");
+    if (adminClassSelect) adminClassSelect.value = className;
+    if (document.getElementById("adminArea")) await renderAdminArea();
+  }
 }
 
 function renderBars(items, labelKey, valueKey) {
@@ -177,9 +252,11 @@ function renderLogin(role) {
       });
       if (!allowedRoles.includes(user.role)) throw new Error(`Invalid ${role} credentials.`);
       setUser(user);
+      showActionSuccess(user, "Login successful.");
       await render();
     } catch (error) {
       form.querySelector(".message").outerHTML = message(error.message, "error");
+      showActionError(error);
     }
   });
   document.getElementById("backButton").addEventListener("click", () => setPage("welcome"));
@@ -213,6 +290,7 @@ function renderSignup() {
     const formData = new FormData(form);
     if (formData.get("password") !== formData.get("confirm")) {
       form.querySelector(".message").outerHTML = message("Passwords do not match.", "error");
+      showToast("Passwords do not match.", "error");
       return;
     }
     try {
@@ -228,9 +306,11 @@ function renderSignup() {
         }),
       });
       setUser(user);
+      showActionSuccess(user, "Account created successfully.");
       await render();
     } catch (error) {
       form.querySelector(".message").outerHTML = message(error.message, "error");
+      showActionError(error);
     }
   });
   document.getElementById("backButton").addEventListener("click", () => setPage("select_role_signup"));
@@ -278,22 +358,21 @@ function renderStudentSection(data) {
       <article class="card"><h4>Point Trend</h4>${renderLine(data.trend, "points")}</article>
     </div>`;
   }
+  if (state.studentTab === "qr") {
+    return `<div class="card-grid">
+      <article class="card">
+        <h4>Add Points QR Card</h4>
+        <p class="meta">Teachers can scan this QR card to add points to your account.</p>
+        <img src="${escapeHtml(data.qr_addpoints_url)}" alt="Add Points QR Card" class="qr-card-image">
+      </article>
+      <article class="card">
+        <h4>Redemption QR Card</h4>
+        <p class="meta">Use this QR card when requesting reward redemption.</p>
+        <img src="${escapeHtml(data.qr_redeem_url)}" alt="Redemption QR Card" class="qr-card-image">
+      </article>
+    </div>`;
+  }
   return `<article class="card"><h4>Leaderboard: ${escapeHtml(data.student.class_name)}</h4>${data.leaderboard.length ? renderBars(data.leaderboard, "student_name", "live_points") : `<p class="meta">No other students in your class yet.</p>`}</article>`;
-}
-
-if (state.studentTab === "qr") {
-  return `<div class="card-grid">
-    <article class="card">
-      <h4>Add Points QR Code</h4>
-      <p class="meta">Scan this QR code to add points to your account.</p>
-      <img src="${escapeHtml(data.qr_addpoints_url)}" alt="Add Points QR Code" style="max-width: 100%; height: auto;">
-    </article>
-    <article class="card">
-      <h4>Redeem QR Code</h4>
-      <p class="meta">Scan this QR code to redeem rewards.</p>
-      <img src="${escapeHtml(data.qr_redeem_url)}" alt="Redeem QR Code" style="max-width: 100%; height: auto;">
-    </article>
-  </div>`;
 }
 
 async function renderStudentDashboard() {
@@ -313,7 +392,7 @@ async function renderStudentDashboard() {
         { id: "transactions", label: "Transactions" },
         { id: "activities", label: "Activities" },
         { id: "leaderboard", label: "Leaderboard" },
-        { id: "qr", label: "QR Codes" },
+        { id: "qr", label: "QR Cards" },
       ],
       state.studentTab,
       "student"
@@ -327,18 +406,20 @@ async function renderStudentDashboard() {
   document.querySelectorAll("[data-redeem]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
-        await api("/api/redemptions/request", {
+        const result = await api("/api/redemptions/request", {
           method: "POST",
           body: JSON.stringify({
             student_id: state.user.student_id,
             reward_id: Number(button.dataset.redeem),
           }),
         });
+        showActionSuccess(result, "Redemption request submitted successfully.");
         state.studentTab = "transactions";
         await render();
       } catch (error) {
         const msgNode = appRoot.querySelector(".message");
         if (msgNode) msgNode.outerHTML = message(error.message, "error");
+        showActionError(error);
       }
     });
   });
@@ -384,14 +465,13 @@ function renderTeacherTab(data) {
   }
   if (state.teacherTab === "qr") {
     return `<article class="card">
-      <h4>Upload QR to Add Points</h4>
+      <h4>Upload QR to Add/Redeem</h4>
       <form class="stack" id="qrUploadForm">
         <label>Upload QR image<input type="file" name="qr_image" accept=".png,.jpg,.jpeg" required /></label>
         <button type="submit">Scan QR Image</button>
         ${message("", "")}
       </form>
       <div id="qrStudentResult"></div>
-      <p class="meta">Direct QR links like <span class="pill">?action=addpoints&amp;sid=1</span> still work too.</p>
     </article>`;
   }
   if (state.teacherTab === "insights") {
@@ -431,7 +511,7 @@ async function renderTeacherDashboard() {
     ${renderTabs(
       [
         { id: "add", label: "Add Points" },
-        { id: "qr", label: "Upload QR to Add Points" },
+        { id: "qr", label: "Upload QR to Add/Redeem" },
         { id: "insights", label: "Class Insights" },
         { id: "categories", label: "Top Categories" },
         { id: "rankings", label: "Student Rankings" },
@@ -475,7 +555,7 @@ async function renderTeacherDashboard() {
       const studentIds = formData.getAll("student_ids").map(Number).filter(Boolean);
       try {
         if (!studentIds.length) throw new Error("Select at least one student.");
-        await api(`/api/teachers/${state.user.teacher_id}/activities/bulk`, {
+        const result = await api(`/api/teachers/${state.user.teacher_id}/activities/bulk`, {
           method: "POST",
           body: JSON.stringify({
             student_ids: studentIds,
@@ -484,9 +564,11 @@ async function renderTeacherDashboard() {
             points: Number(formData.get("points")),
           }),
         });
+        showActionSuccess(result, "Points added successfully.");
         await render();
       } catch (error) {
         addForm.querySelector(".message").outerHTML = message(error.message, "error");
+        showActionError(error);
       }
     });
   }
@@ -503,6 +585,8 @@ async function renderTeacherDashboard() {
         const response = await fetch("/api/qr/decode", { method: "POST", body: upload });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "Unable to decode QR image.");
+        await syncDashboardClassToQrClass(data.class_name, classes);
+        showToast("QR uploaded and scanned successfully.", "success");
         if (data.action === "redeem") {
           document.getElementById("qrStudentResult").innerHTML = `
             <div class="stack">
@@ -531,16 +615,19 @@ async function renderTeacherDashboard() {
             redeemRoot.querySelectorAll("[data-qr-redeem]").forEach((button) => {
               button.addEventListener("click", async () => {
                 try {
-                  await api("/api/redemptions/request", {
+                  const result = await api("/api/redemptions/request", {
                     method: "POST",
                     body: JSON.stringify({
                       student_id: data.student_id,
                       reward_id: Number(button.dataset.qrRedeem),
                     }),
                   });
-                  redeemRoot.querySelector(".message").outerHTML = message("Request submitted. An admin will review it shortly.", "success");
+                  const successText = (result && result.message) || "Request submitted. An admin will review it shortly.";
+                  redeemRoot.querySelector(".message").outerHTML = message(successText, "success");
+                  showToast(successText, "success");
                 } catch (error) {
                   redeemRoot.querySelector(".message").outerHTML = message(error.message, "error");
+                  showActionError(error);
                 }
               });
             });
@@ -563,7 +650,7 @@ async function renderTeacherDashboard() {
             submitEvent.preventDefault();
             const decodedForm = new FormData(submitEvent.target);
             try {
-              await api(`/api/teachers/${state.user.teacher_id}/activities`, {
+              const result = await api(`/api/teachers/${state.user.teacher_id}/activities`, {
                 method: "POST",
                 body: JSON.stringify({
                   student_id: Number(decodedForm.get("student_id")),
@@ -572,14 +659,17 @@ async function renderTeacherDashboard() {
                   points: Number(decodedForm.get("points")),
                 }),
               });
+              showActionSuccess(result, "Points added successfully.");
               await render();
             } catch (error) {
               submitEvent.target.querySelector(".message").outerHTML = message(error.message, "error");
+              showActionError(error);
             }
           });
         }
       } catch (error) {
         qrUploadForm.querySelector(".message").outerHTML = message(error.message, "error");
+        showActionError(error, "QR upload failed.");
       }
     });
   }
@@ -702,22 +792,27 @@ async function renderAdminArea() {
   });
   document.querySelectorAll("[data-assign-teacher]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await api("/api/admin/teacher-assignment", {
-        method: "POST",
-        body: JSON.stringify({
-          teacher_id: Number(button.dataset.assignTeacher),
-          class_name: state.adminClass,
-          assign: button.dataset.assignState === "on",
-        }),
-      });
-      await renderAdminArea();
+      try {
+        const result = await api("/api/admin/teacher-assignment", {
+          method: "POST",
+          body: JSON.stringify({
+            teacher_id: Number(button.dataset.assignTeacher),
+            class_name: state.adminClass,
+            assign: button.dataset.assignState === "on",
+          }),
+        });
+        showActionSuccess(result, "Teacher assignment updated successfully.");
+        await renderAdminArea();
+      } catch (error) {
+        showActionError(error);
+      }
     });
   });
   document.getElementById("newRewardForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(event.target);
     try {
-      await api("/api/admin/rewards", {
+      const result = await api("/api/admin/rewards", {
         method: "POST",
         body: JSON.stringify({
           name: formData.get("name"),
@@ -727,29 +822,41 @@ async function renderAdminArea() {
           source: formData.get("source"),
         }),
       });
+      showActionSuccess(result, "Reward added successfully.");
       await renderAdminArea();
     } catch (error) {
       event.target.querySelector(".message").outerHTML = message(error.message, "error");
+      showActionError(error);
     }
   });
   document.querySelectorAll(".reward-edit").forEach((form) => {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(form);
-      await api(`/api/admin/rewards/${form.dataset.rewardId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          cost: Number(formData.get("cost")),
-          stock: Number(formData.get("stock")),
-        }),
-      });
-      await renderAdminArea();
+      try {
+        const result = await api(`/api/admin/rewards/${form.dataset.rewardId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            cost: Number(formData.get("cost")),
+            stock: Number(formData.get("stock")),
+          }),
+        });
+        showActionSuccess(result, "Reward stock updated successfully.");
+        await renderAdminArea();
+      } catch (error) {
+        showActionError(error);
+      }
     });
   });
   document.querySelectorAll("[data-delete-reward]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await api(`/api/admin/rewards/${button.dataset.deleteReward}`, { method: "DELETE" });
-      await renderAdminArea();
+      try {
+        const result = await api(`/api/admin/rewards/${button.dataset.deleteReward}`, { method: "DELETE" });
+        showActionSuccess(result, "Reward deleted successfully.");
+        await renderAdminArea();
+      } catch (error) {
+        showActionError(error);
+      }
     });
   });
   document.getElementById("adminStatus")?.addEventListener("change", async (event) => {
@@ -760,21 +867,32 @@ async function renderAdminArea() {
     const items = Array.from(document.querySelectorAll("[data-redemption-decision]"))
       .map((select) => ({ id: Number(select.dataset.redemptionDecision), decision: select.value }))
       .filter((item) => item.decision);
-    if (!items.length) return;
-    await api("/api/admin/redemptions/decide", { method: "POST", body: JSON.stringify({ items }) });
-    await renderAdminArea();
+    if (!items.length) {
+      showToast("Select at least one redemption decision first.", "error");
+      return;
+    }
+    try {
+      const result = await api("/api/admin/redemptions/decide", { method: "POST", body: JSON.stringify({ items }) });
+      showActionSuccess(result, "Redemption decisions applied successfully.");
+      await renderAdminArea();
+    } catch (error) {
+      showActionError(error);
+    }
   });
   document.getElementById("resetPasswordForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(event.target);
     try {
-      await api("/api/admin/reset-password", {
+      const result = await api("/api/admin/reset-password", {
         method: "POST",
         body: JSON.stringify({ username: formData.get("username") }),
       });
-      event.target.querySelector(".message").outerHTML = message("Password reset to password123.", "success");
+      const successText = (result && result.message) || "Password reset to password123.";
+      event.target.querySelector(".message").outerHTML = message(successText, "success");
+      showToast(successText, "success");
     } catch (error) {
       event.target.querySelector(".message").outerHTML = message(error.message, "error");
+      showActionError(error);
     }
   });
 }
@@ -811,13 +929,16 @@ async function renderQrMode() {
     document.querySelectorAll("[data-qr-redeem]").forEach((button) => {
       button.addEventListener("click", async () => {
         try {
-          await api("/api/redemptions/request", {
+          const result = await api("/api/redemptions/request", {
             method: "POST",
             body: JSON.stringify({ student_id: Number(query.sid), reward_id: Number(button.dataset.qrRedeem) }),
           });
-          appRoot.querySelector(".message").outerHTML = message("Request submitted. An admin will review it shortly.", "success");
+          const successText = (result && result.message) || "Request submitted. An admin will review it shortly.";
+          appRoot.querySelector(".message").outerHTML = message(successText, "success");
+          showToast(successText, "success");
         } catch (error) {
           appRoot.querySelector(".message").outerHTML = message(error.message, "error");
+          showActionError(error);
         }
       });
     });
@@ -857,7 +978,7 @@ async function renderQrMode() {
           }),
         });
         if (!["teacher", "admin"].includes(teacher.role)) throw new Error("Please login as teacher to proceed.");
-        await api(`/api/teachers/${teacher.teacher_id}/activities`, {
+        const result = await api(`/api/teachers/${teacher.teacher_id}/activities`, {
           method: "POST",
           body: JSON.stringify({
             student_id: Number(query.sid),
@@ -866,9 +987,12 @@ async function renderQrMode() {
             points: Number(formData.get("points")),
           }),
         });
-        event.target.querySelector(".message").outerHTML = message("Points added successfully.", "success");
+        const successText = (result && result.message) || "Points added successfully.";
+        event.target.querySelector(".message").outerHTML = message(successText, "success");
+        showToast(successText, "success");
       } catch (error) {
         event.target.querySelector(".message").outerHTML = message(error.message, "error");
+        showActionError(error);
       }
     });
     return true;
@@ -878,6 +1002,10 @@ async function renderQrMode() {
 
 async function render() {
   if (await renderQrMode()) return;
+  if (state.user && !isValidUser(state.user)) {
+    state.user = null;
+    localStorage.removeItem("edupointx-user");
+  }
   if (state.user) {
     if (state.user.role === "student") return renderStudentDashboard();
     return renderTeacherDashboard();
@@ -893,8 +1021,17 @@ async function render() {
 
 window.addEventListener("load", async () => {
   try {
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const registration of registrations) {
+        try {
+          await registration.unregister();
+        } catch (unregisterError) {
+          console.warn("Failed to unregister service worker:", unregisterError);
+        }
+      }
+    }
     await loadClasses();
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js");
     await render();
   } catch (error) {
     appRoot.innerHTML = `

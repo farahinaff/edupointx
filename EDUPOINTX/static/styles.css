@@ -63,6 +63,16 @@ body {
   display: block;
 }
 
+.qr-card-image {
+  width: min(280px, 100%);
+  height: auto;
+  display: block;
+  margin: 12px auto 0;
+  border-radius: 14px;
+  background: #fff;
+  padding: 10px;
+}
+
 .corner-logo {
   position: absolute;
   top: 16px;
@@ -379,5 +389,51 @@ h4 {
 
   .bar-row {
     grid-template-columns: 88px 1fr 44px;
+  }
+}
+
+
+.toast-root {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: min(360px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.toast {
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--gold);
+  border-radius: 14px;
+  background: rgba(0, 14, 40, 0.96);
+  color: var(--ink);
+  padding: 12px 14px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34);
+  transform: translateY(0);
+  opacity: 1;
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.toast.success {
+  border-left-color: var(--success);
+}
+
+.toast.error {
+  border-left-color: var(--danger);
+}
+
+.toast.hide {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+@media (max-width: 768px) {
+  .toast-root {
+    top: 10px;
+    right: 10px;
+    width: calc(100vw - 20px);
   }
 }
