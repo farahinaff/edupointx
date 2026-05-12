@@ -202,14 +202,22 @@ def build_student_card_filename(name: str, class_name: str) -> str:
 
 def generate_qr_card(student_id: int, name: str, class_name: str) -> None:
     QR_CARDS_DIR.mkdir(parents=True, exist_ok=True)
+    payloads = [
+        (f"?action=addpoints&sid={student_id}", f"{student_id}_addpoints.png"),
+        (f"?action=redeem&sid={student_id}", f"{student_id}_redeem.png"),
+    ]
+    for payload, filename in payloads:
+        qr = qrcode.QRCode(box_size=10, border=2)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        img.save(QR_CARDS_DIR / filename)
+
+    # Also create the combined card for legacy compatibility
     filename = build_student_card_filename(name, class_name)
     card_path = QR_CARDS_DIR / filename
-    payloads = [
-        f"?action=addpoints&sid={student_id}",
-        f"?action=redeem&sid={student_id}",
-    ]
     qr_images = []
-    for payload in payloads:
+    for payload, _ in payloads:
         qr = qrcode.QRCode(box_size=10, border=2)
         qr.add_data(payload)
         qr.make(fit=True)
