@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import base64
 
 import qrcode
 from PIL import Image
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
@@ -22,6 +23,11 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 LEGACY_ASSETS_DIR = APP_DIR / "assets"
 QR_CARDS_DIR = APP_DIR / "qr_cards"
+
+FAVICON_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAA" \
+    "AAAABJRU5ErkJggg=="
+)
 
 app = FastAPI(
     title="EduPointX Mobile",
@@ -660,6 +666,11 @@ def manifest() -> FileResponse:
 @app.get("/service-worker.js")
 def service_worker() -> FileResponse:
     return FileResponse(STATIC_DIR / "service-worker.js")
+
+
+@app.get("/favicon.ico")
+def favicon() -> Response:
+    return Response(content=FAVICON_BYTES, media_type="image/png")
 
 
 @app.get("/api/health")
