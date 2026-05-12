@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,17 +19,50 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hash_password(password) == stored_hash or password == stored_hash
 
 
-def ensure_demo_data(session: Session) -> None:
+def _parse_student_card_filename(file_name: str) -> tuple[str, str] | None:
+    stem = Path(file_name).stem
+    if "_" not in stem:
+        return None
+    name_part, class_name = stem.rsplit("_", 1)
+    name = " ".join(name_part.split("_"))
+    return name, class_name
+
+
+def _make_unique_username(base_name: str, existing: set[str]) -> str:
+    username = re.sub(r"[^a-z0-9]", "", base_name.lower())
+    if not username:
+        username = "student"
+    candidate = username
+    suffix = 1
+    while candidate in existing:
+        suffix += 1
+        candidate = f"{username}{suffix}"
+    existing.add(candidate)
+    return candidate
+
+
+def ensure_demo_data(session: Session, qr_cards_dir: Path) -> None:
     if session.scalar(select(func.count()).select_from(User)) > 0:
         return
 
-    students = [
-        Student(name="Ali Karim", class_name="1 Bestari", gender="male", total_points=120),
-        Student(name="Fatimah Zahra", class_name="1 Bestari", gender="female", total_points=150),
-        Student(name="Ahmad Fahmi", class_name="1 Bestari", gender="male", total_points=90),
-        Student(name="Siti Nabila", class_name="2 Amanah", gender="female", total_points=180),
-        Student(name="Muhammad Danial", class_name="2 Amanah", gender="male", total_points=160),
-    ]
+    students: list[Student] = []
+    if qr_cards_dir.exists():
+        for file_path in sorted(qr_cards_dir.glob("*.png")):
+            parsed = _parse_student_card_filename(file_path.name)
+            if parsed:
+                name, class_name = parsed
+                students.append(
+                    Student(name=name, class_name=class_name, gender=None, total_points=0)
+                )
+    if not students:
+        students = [
+            Student(name="Ali Karim", class_name="1 Bestari", gender="male", total_points=120),
+            Student(name="Fatimah Zahra", class_name="1 Bestari", gender="female", total_points=150),
+            Student(name="Ahmad Fahmi", class_name="1 Bestari", gender="male", total_points=90),
+            Student(name="Siti Nabila", class_name="2 Amanah", gender="female", total_points=180),
+            Student(name="Muhammad Danial", class_name="2 Amanah", gender="male", total_points=160),
+        ]
+
     teachers = [Teacher(name="Mr. Hassan", gender="male"), Teacher(name="Ms. Aishah", gender="female")]
     rewards = [
         Reward(
@@ -90,34 +125,33 @@ def ensure_demo_data(session: Session) -> None:
         ]
     )
     session.flush()
-    session.add_all(
-        [
+    existing_usernames: set[str] = set()
+    student_users = []
+    for student in students:
+        username = _make_unique_username(student.name, existing_usernames)
+        student_users.append(
             User(
-                username="ali",
+                username=username,
                 password_hash=hash_password("password123"),
                 role="student",
-                student_id=students[0].id,
-            ),
-            User(
-                username="fatimah",
-                password_hash=hash_password("password123"),
-                role="student",
-                student_id=students[1].id,
-            ),
-            User(
-                username="hassan",
-                password_hash=hash_password("password123"),
-                role="teacher",
-                teacher_id=teachers[0].id,
-            ),
-            User(
-                username="aishah",
-                password_hash=hash_password("password123"),
-                role="admin",
-                teacher_id=teachers[1].id,
-            ),
-        ]
-    )
+                student_id=student.id,
+            )
+        )
+    teacher_users = [
+        User(
+            username="hassan",
+            password_hash=hash_password("password123"),
+            role="teacher",
+            teacher_id=teachers[0].id,
+        ),
+        User(
+            username="aishah",
+            password_hash=hash_password("password123"),
+            role="admin",
+            teacher_id=teachers[1].id,
+        ),
+    ]
+    session.add_all(student_users + teacher_users)
     session.add(
         Redemption(
             student_id=students[0].id,

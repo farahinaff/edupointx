@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+import qrcode
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -18,6 +20,7 @@ from .services import ensure_demo_data, hash_password, recalc_student_points, ve
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 LEGACY_ASSETS_DIR = APP_DIR / "assets"
+QR_CARDS_DIR = APP_DIR / "qr_cards"
 
 app = FastAPI(
     title="EduPointX Mobile",
@@ -151,16 +154,51 @@ def decode_qr_strings(image_bytes: bytes) -> list[str]:
     return uniq
 
 
-def choose_addpoints_sid(decoded_list: list[str]) -> tuple[str | None, str | None]:
+def parse_qr_action_sid(decoded_list: list[str]) -> tuple[str | None, str | None]:
     for raw in decoded_list:
-        low = raw.lower()
-        is_add = ("mode=deed" in low) or ("action=addpoints" in low)
-        if is_add and "sid=" in low:
-            parts = raw.split("sid=", 1)
-            if len(parts) == 2:
-                sid = parts[1].split("&", 1)[0].strip()
-                return raw, sid
+        payload = raw.strip()
+        if not payload:
+            continue
+        parsed = urlparse(payload)
+        query_string = parsed.query or payload.lstrip("?")
+        params = parse_qs(query_string, keep_blank_values=True)
+        sid_values = params.get("sid") or params.get("student_id")
+        if not sid_values:
+            continue
+        sid = sid_values[0].strip()
+        if not sid:
+            continue
+        action = None
+        action_values = params.get("action") or params.get("mode")
+        if action_values:
+            action = action_values[0].strip().lower()
+            if action == "deed":
+                action = "addpoints"
+        if not action:
+            low = payload.lower()
+            if "redeem" in low:
+                action = "redeem"
+            elif "deed" in low or "addpoints" in low:
+                action = "addpoints"
+        return action, sid
     return None, None
+
+
+def build_student_card_filename(name: str, class_name: str) -> str:
+    name_safe = "_".join(name.strip().split())
+    return f"{name_safe}_{class_name}.png"
+
+
+def generate_qr_card(student_id: int, name: str, class_name: str) -> None:
+    QR_CARDS_DIR.mkdir(parents=True, exist_ok=True)
+    filename = build_student_card_filename(name, class_name)
+    card_path = QR_CARDS_DIR / filename
+    payload = f"?action=addpoints&sid={student_id}"
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img.save(card_path)
 
 
 def get_students_for_activity(db: Session, student_ids: list[int]) -> list[Student]:
@@ -558,7 +596,7 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_legacy_sqlite_compatibility()
     with SessionLocal() as session:
-        ensure_demo_data(session)
+        ensure_demo_data(session, QR_CARDS_DIR)
         for student in session.scalars(select(Student)).all():
             recalc_student_points(session, student.id)
         session.commit()
@@ -646,6 +684,11 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> dict:
     )
     db.add(user)
     db.commit()
+    if role == "student" and student_id is not None:
+        try:
+            generate_qr_card(student_id, payload.full_name, payload.class_name or "")
+        except (OSError, ValueError):
+            pass
     return {
         "id": user.id,
         "username": user.username,
@@ -672,12 +715,12 @@ def request_redemption(payload: RedemptionRequest, db: Session = Depends(get_db)
     return {"message": f"Request submitted for '{reward.name}'."}
 
 
-@app.post("/api/qr/decode-addpoints")
-async def decode_addpoints_qr(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+@app.post("/api/qr/decode")
+async def decode_qr(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
     decoded = decode_qr_strings(await file.read())
-    _matched, sid = choose_addpoints_sid(decoded)
+    action, sid = parse_qr_action_sid(decoded)
     if not sid:
-        raise HTTPException(status_code=400, detail="No Add Points QR found in the uploaded image.")
+        raise HTTPException(status_code=400, detail="No valid QR found in the uploaded image.")
     try:
         student_id = int(sid)
     except ValueError as exc:
@@ -689,8 +732,17 @@ async def decode_addpoints_qr(file: UploadFile = File(...), db: Session = Depend
         "student_id": student.id,
         "name": student.name,
         "class_name": student.class_name,
+        "action": action or "addpoints",
         "decoded": decoded,
     }
+
+
+@app.post("/api/qr/decode-addpoints")
+async def decode_addpoints_qr(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+    result = await decode_qr(file, db)
+    if result["action"] != "addpoints":
+        raise HTTPException(status_code=400, detail="QR code is not an add-points QR code.")
+    return result
 
 
 @app.get("/api/teachers/{teacher_id}/classes")

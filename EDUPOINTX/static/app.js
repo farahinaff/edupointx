@@ -484,40 +484,84 @@ async function renderTeacherDashboard() {
       const upload = new FormData();
       upload.append("file", image);
       try {
-        const response = await fetch("/api/qr/decode-addpoints", { method: "POST", body: upload });
+        const response = await fetch("/api/qr/decode", { method: "POST", body: upload });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "Unable to decode QR image.");
-        document.getElementById("qrStudentResult").innerHTML = `
-          <form class="stack" id="qrDecodedAddForm">
-            <p class="meta">Student: ${escapeHtml(data.name)} (${escapeHtml(data.class_name)})</p>
-            <input type="hidden" name="student_id" value="${data.student_id}" />
-            <label>Deed Category<select name="category">${deedCategories
-              .map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
-              .join("")}</select></label>
-            <label>Reason / Description<input name="reason" required /></label>
-            <label>Point Reward<input name="points" type="number" min="1" max="100" value="10" required /></label>
-            <button type="submit">Add Points</button>
-            ${message("", "")}
-          </form>
-        `;
-        document.getElementById("qrDecodedAddForm").addEventListener("submit", async (submitEvent) => {
-          submitEvent.preventDefault();
-          const decodedForm = new FormData(submitEvent.target);
-          try {
-            await api(`/api/teachers/${state.user.teacher_id}/activities`, {
-              method: "POST",
-              body: JSON.stringify({
-                student_id: Number(decodedForm.get("student_id")),
-                category: decodedForm.get("category"),
-                reason: decodedForm.get("reason"),
-                points: Number(decodedForm.get("points")),
-              }),
+        if (data.action === "redeem") {
+          document.getElementById("qrStudentResult").innerHTML = `
+            <div class="stack">
+              <h3>Redeem Rewards for ${escapeHtml(data.name)}</h3>
+              <p class="meta">Class: ${escapeHtml(data.class_name)}</p>
+              <div id="qrRedeemContent"></div>
+            </div>
+          `;
+          const redeemRoot = document.getElementById("qrRedeemContent");
+          const dashboard = await api(`/api/students/${data.student_id}/dashboard`);
+          if (!dashboard.rewards.length) {
+            redeemRoot.innerHTML = `<p class="meta">No rewards available right now.</p>`;
+          } else {
+            redeemRoot.innerHTML = `
+              <div class="list">${dashboard.rewards
+                .map(
+                  (reward) => `<div class="list-item">
+                    <div class="row"><strong>${escapeHtml(reward.name)}</strong><span class="pill">${reward.cost} pts</span></div>
+                    <p class="meta">${escapeHtml(reward.description)}</p>
+                    <button data-qr-redeem="${reward.id}">Request Redemption</button>
+                  </div>`
+                )
+                .join("")}</div>
+              ${message("", "")}
+            `;
+            redeemRoot.querySelectorAll("[data-qr-redeem]").forEach((button) => {
+              button.addEventListener("click", async () => {
+                try {
+                  await api("/api/redemptions/request", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      student_id: data.student_id,
+                      reward_id: Number(button.dataset.qrRedeem),
+                    }),
+                  });
+                  redeemRoot.querySelector(".message").outerHTML = message("Request submitted. An admin will review it shortly.", "success");
+                } catch (error) {
+                  redeemRoot.querySelector(".message").outerHTML = message(error.message, "error");
+                }
+              });
             });
-            await render();
-          } catch (error) {
-            submitEvent.target.querySelector(".message").outerHTML = message(error.message, "error");
           }
-        });
+        } else {
+          document.getElementById("qrStudentResult").innerHTML = `
+            <form class="stack" id="qrDecodedAddForm">
+              <p class="meta">Student: ${escapeHtml(data.name)} (${escapeHtml(data.class_name)})</p>
+              <input type="hidden" name="student_id" value="${data.student_id}" />
+              <label>Deed Category<select name="category">${deedCategories
+                .map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
+                .join("")}</select></label>
+              <label>Reason / Description<input name="reason" required /></label>
+              <label>Point Reward<input name="points" type="number" min="1" max="100" value="10" required /></label>
+              <button type="submit">Add Points</button>
+              ${message("", "")}
+            </form>
+          `;
+          document.getElementById("qrDecodedAddForm").addEventListener("submit", async (submitEvent) => {
+            submitEvent.preventDefault();
+            const decodedForm = new FormData(submitEvent.target);
+            try {
+              await api(`/api/teachers/${state.user.teacher_id}/activities`, {
+                method: "POST",
+                body: JSON.stringify({
+                  student_id: Number(decodedForm.get("student_id")),
+                  category: decodedForm.get("category"),
+                  reason: decodedForm.get("reason"),
+                  points: Number(decodedForm.get("points")),
+                }),
+              });
+              await render();
+            } catch (error) {
+              submitEvent.target.querySelector(".message").outerHTML = message(error.message, "error");
+            }
+          });
+        }
       } catch (error) {
         qrUploadForm.querySelector(".message").outerHTML = message(error.message, "error");
       }
