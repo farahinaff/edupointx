@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import qrcode
+from PIL import Image
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -155,6 +156,7 @@ def decode_qr_strings(image_bytes: bytes) -> list[str]:
 
 
 def parse_qr_action_sid(decoded_list: list[str]) -> tuple[str | None, str | None]:
+    candidates: list[tuple[str, str]] = []
     for raw in decoded_list:
         payload = raw.strip()
         if not payload:
@@ -180,25 +182,56 @@ def parse_qr_action_sid(decoded_list: list[str]) -> tuple[str | None, str | None
                 action = "redeem"
             elif "deed" in low or "addpoints" in low:
                 action = "addpoints"
-        return action, sid
-    return None, None
+        if action:
+            candidates.append((action, sid))
+    if not candidates:
+        return None, None
+    for preferred in ("addpoints", "redeem"):
+        for action, sid in candidates:
+            if action == preferred:
+                return action, sid
+    return candidates[0]
 
 
 def build_student_card_filename(name: str, class_name: str) -> str:
     name_safe = "_".join(name.strip().split())
-    return f"{name_safe}_{class_name}.png"
+    class_safe = "_".join(class_name.strip().split())
+    return f"{name_safe}_{class_safe}.png"
 
 
 def generate_qr_card(student_id: int, name: str, class_name: str) -> None:
     QR_CARDS_DIR.mkdir(parents=True, exist_ok=True)
     filename = build_student_card_filename(name, class_name)
     card_path = QR_CARDS_DIR / filename
-    payload = f"?action=addpoints&sid={student_id}"
-    qr = qrcode.QRCode(box_size=10, border=2)
-    qr.add_data(payload)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    img.save(card_path)
+    payloads = [
+        f"?action=addpoints&sid={student_id}",
+        f"?action=redeem&sid={student_id}",
+    ]
+    qr_images = []
+    for payload in payloads:
+        qr = qrcode.QRCode(box_size=10, border=2)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        qr_images.append(qr.make_image(fill_color="black", back_color="white").convert("RGB"))
+
+    spacing = 20
+    widths = [img.width for img in qr_images]
+    heights = [img.height for img in qr_images]
+    total_width = sum(widths) + spacing * (len(qr_images) - 1)
+    max_height = max(heights)
+
+    combined = Image.new("RGB", (total_width, max_height), "white")
+    x = 0
+    for img in qr_images:
+        combined.paste(img, (x, (max_height - img.height) // 2))
+        x += img.width + spacing
+    combined.save(card_path)
+
+
+def sync_qr_cards_for_students(db: Session) -> None:
+    QR_CARDS_DIR.mkdir(parents=True, exist_ok=True)
+    for student in db.scalars(select(Student)).all():
+        generate_qr_card(student.id, student.name, student.class_name)
 
 
 def get_students_for_activity(db: Session, student_ids: list[int]) -> list[Student]:
@@ -597,6 +630,7 @@ def on_startup() -> None:
     ensure_legacy_sqlite_compatibility()
     with SessionLocal() as session:
         ensure_demo_data(session, QR_CARDS_DIR)
+        sync_qr_cards_for_students(session)
         for student in session.scalars(select(Student)).all():
             recalc_student_points(session, student.id)
         session.commit()
