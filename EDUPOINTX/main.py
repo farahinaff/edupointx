@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import base64
@@ -206,24 +207,44 @@ def build_student_card_filename(name: str, class_name: str) -> str:
     return f"{name_safe}_{class_safe}.png"
 
 
+def _slug_words(value: str, separator: str = "_", join_words: bool = False) -> str:
+    words = re.findall(r"[a-z0-9]+", value.lower())
+    if join_words:
+        return "".join(words)
+    return separator.join(words)
+
+
+def build_student_qr_basename(name: str, class_name: str) -> str:
+    """Return meaningful QR file prefix, e.g. alikarim_1_bestari."""
+    name_safe = _slug_words(name, join_words=True) or "student"
+    class_safe = _slug_words(class_name) or "class"
+    return f"{name_safe}_{class_safe}"
+
+
+def build_student_qr_filename(name: str, class_name: str, action: str) -> str:
+    suffix = "addpoint" if action == "addpoints" else "redemption"
+    return f"{build_student_qr_basename(name, class_name)}_{suffix}.png"
+
+
 def generate_qr_card(student_id: int, name: str, class_name: str) -> None:
     QR_CARDS_DIR.mkdir(parents=True, exist_ok=True)
     payloads = [
-        (f"?action=addpoints&sid={student_id}", f"{student_id}_addpoints.png"),
-        (f"?action=redeem&sid={student_id}", f"{student_id}_redeem.png"),
+        ("addpoints", f"?action=addpoints&sid={student_id}"),
+        ("redeem", f"?action=redeem&sid={student_id}"),
     ]
-    for payload, filename in payloads:
+    for action, payload in payloads:
         qr = qrcode.QRCode(box_size=10, border=2)
         qr.add_data(payload)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        filename = build_student_qr_filename(name, class_name, action)
         img.save(QR_CARDS_DIR / filename)
 
     # Also create the combined card for legacy compatibility
     filename = build_student_card_filename(name, class_name)
     card_path = QR_CARDS_DIR / filename
     qr_images = []
-    for payload, _ in payloads:
+    for _action, payload in payloads:
         qr = qrcode.QRCode(box_size=10, border=2)
         qr.add_data(payload)
         qr.make(fit=True)
@@ -376,8 +397,8 @@ def build_student_dashboard(db: Session, student_id: int) -> dict:
         ],
         "leaderboard": leaderboard_rows,
         "trend": [{"date": date, "points": points} for date, points in trend.items()],
-        "qr_addpoints_url": f"/qr_cards/{student.id}_addpoints.png",
-        "qr_redeem_url": f"/qr_cards/{student.id}_redeem.png",
+        "qr_addpoints_url": f"/qr_cards/{build_student_qr_filename(student.name, student.class_name, 'addpoints')}",
+        "qr_redeem_url": f"/qr_cards/{build_student_qr_filename(student.name, student.class_name, 'redeem')}",
     }
 
 
@@ -483,6 +504,7 @@ def build_admin_dashboard(db: Session, selected_class: str | None, redemption_st
     ).all()
 
     filtered_redemptions = []
+    status_counts: dict[str, int] = {}
     for row in redemption_rows:
         (
             redemption_id,
@@ -497,12 +519,12 @@ def build_admin_dashboard(db: Session, selected_class: str | None, redemption_st
             status,
             created_at,
         ) = row
-        insufficient = status == "pending" and (int(total_points) < int(cost) or int(stock) <= 0)
-        if redemption_status == "insufficient" and not insufficient:
-            continue
-        if redemption_status != "insufficient" and status != redemption_status:
-            continue
         if class_name and student_class != class_name:
+            continue
+        insufficient = status == "pending" and (int(total_points) < int(cost) or int(stock) <= 0)
+        display_status = "insufficient" if insufficient else status
+        status_counts[display_status] = status_counts.get(display_status, 0) + 1
+        if display_status != redemption_status:
             continue
         filtered_redemptions.append(
             {
@@ -515,41 +537,64 @@ def build_admin_dashboard(db: Session, selected_class: str | None, redemption_st
                 "reward_name": reward_name,
                 "cost": int(cost),
                 "stock": int(stock),
-                "status": status,
+                "status": display_status,
                 "date": created_at.isoformat(),
                 "insufficient": insufficient,
             }
         )
 
-    status_rows = db.execute(
-        select(Redemption.status, func.count(Redemption.id)).group_by(Redemption.status)
-    ).all()
-    total_spent = db.scalar(
+    status_rows = sorted(status_counts.items())
+
+    total_spent_query = (
         select(func.coalesce(func.sum(Reward.cost), 0))
         .select_from(Redemption)
         .join(Reward, Reward.id == Redemption.reward_id)
+        .join(Student, Student.id == Redemption.student_id)
         .where(Redemption.status == "approved")
     )
-    top_rewards = db.execute(
+    if class_name:
+        total_spent_query = total_spent_query.where(Student.class_name == class_name)
+    total_spent = db.scalar(total_spent_query)
+
+    top_rewards_query = (
         select(Reward.name, func.count(Redemption.id))
         .join(Redemption, Redemption.reward_id == Reward.id)
+        .join(Student, Student.id == Redemption.student_id)
         .where(Redemption.status == "approved")
+    )
+    if class_name:
+        top_rewards_query = top_rewards_query.where(Student.class_name == class_name)
+    top_rewards = db.execute(
+        top_rewards_query
         .group_by(Reward.id, Reward.name)
         .order_by(desc(func.count(Redemption.id)))
         .limit(10)
     ).all()
-    top_students = db.execute(
+
+    top_students_query = (
         select(Student.name, func.count(Redemption.id), func.coalesce(func.sum(Reward.cost), 0))
         .join(Redemption, Redemption.student_id == Student.id)
         .join(Reward, Reward.id == Redemption.reward_id)
         .where(Redemption.status == "approved")
+    )
+    if class_name:
+        top_students_query = top_students_query.where(Student.class_name == class_name)
+    top_students = db.execute(
+        top_students_query
         .group_by(Student.id, Student.name)
         .order_by(desc(func.count(Redemption.id)))
         .limit(10)
     ).all()
-    timeline = db.execute(
+
+    timeline_query = (
         select(func.date(Redemption.created_at), func.count(Redemption.id))
+        .join(Student, Student.id == Redemption.student_id)
         .where(Redemption.status == "approved")
+    )
+    if class_name:
+        timeline_query = timeline_query.where(Student.class_name == class_name)
+    timeline = db.execute(
+        timeline_query
         .group_by(func.date(Redemption.created_at))
         .order_by(func.date(Redemption.created_at))
     ).all()
@@ -733,7 +778,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> dict:
 
     user = User(
         username=payload.username,
-        password_hash=payload.password,
+        password_hash=hash_password(payload.password),
         role=role,
         student_id=student_id,
         teacher_id=teacher_id,
@@ -931,30 +976,50 @@ def delete_reward(reward_id: int, db: Session = Depends(get_db)) -> dict[str, st
 
 @app.post("/api/admin/redemptions/decide")
 def decide_redemptions(payload: RedemptionDecisionRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+    approved = 0
+    rejected = 0
+    skipped = 0
     for item in payload.items:
         redemption = db.get(Redemption, item.id)
         if not redemption:
+            skipped += 1
             continue
         decision = item.decision.strip().lower()
         if decision == "reject":
             if redemption.status == "pending":
                 redemption.status = "rejected"
+                rejected += 1
+            else:
+                skipped += 1
         elif decision == "approve":
             if redemption.status != "pending":
+                skipped += 1
                 continue
             student = db.get(Student, redemption.student_id)
             reward = db.get(Reward, redemption.reward_id)
             if not student or not reward:
+                skipped += 1
                 continue
             recalc_student_points(db, student.id)
             if student.total_points >= reward.cost and reward.stock > 0:
                 redemption.status = "approved"
                 reward.stock -= 1
                 recalc_student_points(db, student.id)
+                approved += 1
+            else:
+                skipped += 1
         else:
-            continue
+            skipped += 1
     db.commit()
-    return {"message": "Decisions applied."}
+    parts = []
+    if approved:
+        parts.append(f"approved {approved}")
+    if rejected:
+        parts.append(f"rejected {rejected}")
+    if skipped:
+        parts.append(f"skipped {skipped}")
+    detail = ", ".join(parts) if parts else "no changes"
+    return {"message": f"Redemption decisions applied: {detail}."}
 
 
 @app.post("/api/admin/reset-password")
