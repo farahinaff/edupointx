@@ -3,7 +3,7 @@ services:
     name: edupointx-mobile
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn EDUPOINTX.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     disks:
       - name: edupointx-data
         mountPath: /var/data

@@ -1,0 +1,1 @@
+"""EduPointX Mobile Application."""
