@@ -281,6 +281,21 @@ function renderStudentSection(data) {
   return `<article class="card"><h4>Leaderboard: ${escapeHtml(data.student.class_name)}</h4>${data.leaderboard.length ? renderBars(data.leaderboard, "student_name", "live_points") : `<p class="meta">No other students in your class yet.</p>`}</article>`;
 }
 
+if (state.studentTab === "qr") {
+  return `<div class="card-grid">
+    <article class="card">
+      <h4>Add Points QR Code</h4>
+      <p class="meta">Scan this QR code to add points to your account.</p>
+      <img src="${escapeHtml(data.qr_addpoints_url)}" alt="Add Points QR Code" style="max-width: 100%; height: auto;">
+    </article>
+    <article class="card">
+      <h4>Redeem QR Code</h4>
+      <p class="meta">Scan this QR code to redeem rewards.</p>
+      <img src="${escapeHtml(data.qr_redeem_url)}" alt="Redeem QR Code" style="max-width: 100%; height: auto;">
+    </article>
+  </div>`;
+}
+
 async function renderStudentDashboard() {
   const data = await api(`/api/students/${state.user.student_id}/dashboard`);
   appRoot.innerHTML = `
@@ -298,6 +313,7 @@ async function renderStudentDashboard() {
         { id: "transactions", label: "Transactions" },
         { id: "activities", label: "Activities" },
         { id: "leaderboard", label: "Leaderboard" },
+        { id: "qr", label: "QR Codes" },
       ],
       state.studentTab,
       "student"
