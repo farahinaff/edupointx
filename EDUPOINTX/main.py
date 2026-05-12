@@ -37,6 +37,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if LEGACY_ASSETS_DIR.exists():
     app.mount("/legacy-assets", StaticFiles(directory=LEGACY_ASSETS_DIR), name="legacy-assets")
+app.mount("/qr_cards", StaticFiles(directory=QR_CARDS_DIR), name="qr_cards")
 
 
 class LoginRequest(BaseModel):
@@ -361,6 +362,8 @@ def build_student_dashboard(db: Session, student_id: int) -> dict:
         ],
         "leaderboard": leaderboard_rows,
         "trend": [{"date": date, "points": points} for date, points in trend.items()],
+        "qr_addpoints_url": f"/qr_cards/{student.id}_addpoints.png",
+        "qr_redeem_url": f"/qr_cards/{student.id}_redeem.png",
     }
 
 
