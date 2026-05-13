@@ -467,7 +467,12 @@ function renderTeacherTab(data) {
     return `<article class="card">
       <h4>Upload QR to Add/Redeem</h4>
       <form class="stack" id="qrUploadForm">
-        <label>Upload QR image<input type="file" name="qr_image" accept=".png,.jpg,.jpeg" required /></label>
+        <p class="meta">For cards with two QR codes, choose the purpose first. The system will scan both QR codes and use the matching one.</p>
+        <label>Purpose<select name="purpose" required>
+          <option value="addpoints">Add Points</option>
+          <option value="redeem">Redeem Points</option>
+        </select></label>
+        <label>Upload QR card/image<input type="file" name="qr_image" accept=".png,.jpg,.jpeg" required /></label>
         <button type="submit">Scan QR Image</button>
         ${message("", "")}
       </form>
@@ -578,19 +583,23 @@ async function renderTeacherDashboard() {
       event.preventDefault();
       const formData = new FormData(qrUploadForm);
       const image = formData.get("qr_image");
+      const purpose = formData.get("purpose");
       if (!(image instanceof File) || !image.size) return;
       const upload = new FormData();
       upload.append("file", image);
+      upload.append("purpose", purpose);
       try {
         const response = await fetch("/api/qr/decode", { method: "POST", body: upload });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "Unable to decode QR image.");
         await syncDashboardClassToQrClass(data.class_name, classes);
-        showToast("QR uploaded and scanned successfully.", "success");
+        const scannedMode = data.action === "redeem" ? "Redeem Points" : "Add Points";
+        showToast(`${scannedMode} QR uploaded and scanned successfully.`, "success");
         if (data.action === "redeem") {
           document.getElementById("qrStudentResult").innerHTML = `
             <div class="stack">
               <h3>Redeem Rewards for ${escapeHtml(data.name)}</h3>
+              <p class="meta">Selected QR: Redeem Points</p>
               <p class="meta">Class: ${escapeHtml(data.class_name)}</p>
               <div id="qrRedeemContent"></div>
             </div>
@@ -635,6 +644,7 @@ async function renderTeacherDashboard() {
         } else {
           document.getElementById("qrStudentResult").innerHTML = `
             <form class="stack" id="qrDecodedAddForm">
+              <p class="meta">Selected QR: Add Points</p>
               <p class="meta">Student: ${escapeHtml(data.name)} (${escapeHtml(data.class_name)})</p>
               <input type="hidden" name="student_id" value="${data.student_id}" />
               <label>Deed Category<select name="category">${deedCategories

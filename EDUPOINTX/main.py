@@ -7,7 +7,7 @@ import base64
 
 import qrcode
 from PIL import Image
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -163,7 +163,26 @@ def decode_qr_strings(image_bytes: bytes) -> list[str]:
     return uniq
 
 
-def parse_qr_action_sid(decoded_list: list[str]) -> tuple[str | None, str | None]:
+def normalize_qr_action(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = re.sub(r"[^a-z0-9]", "", value.strip().lower())
+    aliases = {
+        "addpoint": "addpoints",
+        "addpoints": "addpoints",
+        "deed": "addpoints",
+        "points": "addpoints",
+        "redeem": "redeem",
+        "redemption": "redeem",
+    }
+    return aliases.get(normalized)
+
+
+def parse_qr_action_sid(
+    decoded_list: list[str],
+    preferred_action: str | None = None,
+) -> tuple[str | None, str | None]:
+    preferred_action = normalize_qr_action(preferred_action)
     candidates: list[tuple[str, str]] = []
     for raw in decoded_list:
         payload = raw.strip()
@@ -181,18 +200,21 @@ def parse_qr_action_sid(decoded_list: list[str]) -> tuple[str | None, str | None
         action = None
         action_values = params.get("action") or params.get("mode")
         if action_values:
-            action = action_values[0].strip().lower()
-            if action == "deed":
-                action = "addpoints"
+            action = normalize_qr_action(action_values[0])
         if not action:
             low = payload.lower()
-            if "redeem" in low:
+            if "redeem" in low or "redemption" in low:
                 action = "redeem"
-            elif "deed" in low or "addpoints" in low:
+            elif "deed" in low or "addpoints" in low or "addpoint" in low:
                 action = "addpoints"
         if action:
             candidates.append((action, sid))
     if not candidates:
+        return None, None
+    if preferred_action:
+        for action, sid in candidates:
+            if action == preferred_action:
+                return action, sid
         return None, None
     for preferred in ("addpoints", "redeem"):
         for action, sid in candidates:
@@ -817,10 +839,20 @@ def request_redemption(payload: RedemptionRequest, db: Session = Depends(get_db)
 
 
 @app.post("/api/qr/decode")
-async def decode_qr(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
+async def decode_qr(
+    file: UploadFile = File(...),
+    purpose: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> dict:
     decoded = decode_qr_strings(await file.read())
-    action, sid = parse_qr_action_sid(decoded)
+    preferred_action = normalize_qr_action(purpose)
+    if purpose and not preferred_action:
+        raise HTTPException(status_code=400, detail="Invalid QR purpose selected.")
+    action, sid = parse_qr_action_sid(decoded, preferred_action=preferred_action)
     if not sid:
+        if decoded and preferred_action:
+            label = "add-points" if preferred_action == "addpoints" else "redemption"
+            raise HTTPException(status_code=400, detail=f"No {label} QR found in the uploaded image.")
         raise HTTPException(status_code=400, detail="No valid QR found in the uploaded image.")
     try:
         student_id = int(sid)
@@ -833,14 +865,14 @@ async def decode_qr(file: UploadFile = File(...), db: Session = Depends(get_db))
         "student_id": student.id,
         "name": student.name,
         "class_name": student.class_name,
-        "action": action or "addpoints",
+        "action": action or preferred_action or "addpoints",
         "decoded": decoded,
     }
 
 
 @app.post("/api/qr/decode-addpoints")
 async def decode_addpoints_qr(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict:
-    result = await decode_qr(file, db)
+    result = await decode_qr(file=file, purpose="addpoints", db=db)
     if result["action"] != "addpoints":
         raise HTTPException(status_code=400, detail="QR code is not an add-points QR code.")
     return result

@@ -65,10 +65,7 @@ This repo includes `render.yaml` and uses:
 
 ## QR Flow
 
-The app supports both:
-
-- QR-style direct links such as `?action=addpoints&sid=1` and `?action=redeem&sid=1`
-- Teacher QR image upload for add-points flow
+Teacher and admin users can upload a student QR card that contains both Add Points and Redeem QR codes. The upload screen requires the user to select the purpose first, then the backend scans all QR codes in the image and uses the matching QR payload.
 
 ## Notes
 
